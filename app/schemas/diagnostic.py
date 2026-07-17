@@ -49,6 +49,15 @@ class ProviderOutput(BaseModel):
     recommended_action:str
     alternative_diagnoses:list[ErrorCategory]=[]
     model_confidence:float=Field(ge=0,le=1)
+class StoredDiagnosticPayload(ProviderOutput):
+    """Same shape as ProviderOutput, for reading already-persisted
+    diagnostic_results.payload data. model_confidence is the only relaxed
+    field: legacy rows migrated by 0007_reconcile_diagnostic_schema have no
+    historical value for it (see that migration's docstring) and store JSON
+    null. Never used to validate fresh provider output -- new diagnoses are
+    always validated against the strict ProviderOutput at the provider
+    boundary in DiagnosticService.create()."""
+    model_confidence:float|None=Field(None,ge=0,le=1)
 class ConfidenceBreakdown(BaseModel):
     base_score:float
     adjustments:dict[str,float]
