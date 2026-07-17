@@ -2,10 +2,9 @@ from fastapi import APIRouter,Depends,File,Form,UploadFile,Query,status
 from app.api.dependencies import get_service
 from app.schemas.diagnostic import *
 from app.core.config import get_settings
-from app.security.api_key import require_api_key
 from app.core.exceptions import UnsupportedFile,FileTooLarge
 from app.services.ocr_service import NoOpOCRProvider
-router=APIRouter(prefix='/api/v1',tags=['diagnostics'],dependencies=[Depends(require_api_key)])
+router=APIRouter(prefix='/api/v1',tags=['diagnostics'])
 @router.post('/diagnostics',response_model=DiagnosticResponse,status_code=201)
 async def create(r:DiagnosticRequest,s=Depends(get_service)): return await s.create(r)
 @router.get('/diagnostics/{diagnostic_id}',response_model=DiagnosticResponse)
