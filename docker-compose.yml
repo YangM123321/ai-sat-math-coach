@@ -5,12 +5,23 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Always the Docker-internal network address/port, independent of
+      # POSTGRES_PORT below (which only affects the host-side mapping).
       DATABASE_URL: postgresql+psycopg://sat:sat@db:5432/sat_coach
-      DIAGNOSTIC_PROVIDER: rule_based
-      REQUIRE_API_KEY: "false"
+      DIAGNOSTIC_PROVIDER: "${DIAGNOSTIC_PROVIDER:-rule_based}"
+      REQUIRE_API_KEY: "${REQUIRE_API_KEY:-false}"
+      API_KEY: "${API_KEY:-}"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      # No curl in python:3.12-slim; use the Python already in the image.
+      # Hits the public, unauthenticated /health endpoint.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
   db:
     image: postgres:16-alpine
     environment:
@@ -23,7 +34,9 @@ services:
       timeout: 5s
       retries: 10
     ports:
-      - "5432:5432"
+      # Host-side port only; the api service always reaches this container
+      # at db:5432 over the internal Docker network regardless of this value.
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 volumes:

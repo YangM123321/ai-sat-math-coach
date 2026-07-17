@@ -80,9 +80,98 @@ MIGRATION_TEST_DATABASE_URL=postgresql+psycopg://sat:sat@localhost:5432/sat_coac
 
 ## Docker
 
+### Build and start
+
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
+
+This builds the API image, starts PostgreSQL, waits for it to become healthy, runs `alembic upgrade head` inside the API container, then starts `uvicorn`. No `.env` file is required — the defaults below apply automatically.
+
+### Check status
+
+```bash
+docker compose ps
+```
+
+Both `api` and `db` should show as healthy (`db` uses `pg_isready`; `api` polls its own `/health` endpoint).
+
+### Verify it's working
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+```
+
+Swagger UI: `http://localhost:8000/docs`
+
+### View logs
+
+```bash
+docker compose logs -f api
+docker compose logs -f db
+```
+
+### Stop
+
+```bash
+docker compose down
+```
+
+Stops and removes the containers but **preserves** the PostgreSQL data in the named `postgres_data` volume — starting the stack again with `docker compose up -d --build` will see the same data.
+
+```bash
+docker compose down -v
+```
+
+Same as above, but also **deletes** the `postgres_data` volume — the next `up` starts from a completely empty database.
+
+### Default ports
+
+| Service | Port | Purpose |
+|---|---|---|
+| `api` | `8000` | FastAPI application |
+| `db` | `5432` | PostgreSQL, published to the host |
+
+### Port 5432 conflicts
+
+If you already have a local PostgreSQL installation running on your machine, it may already be using port `5432`. Docker Compose can still report `db` as started and healthy in this situation — the healthcheck runs *inside* the container, not against the host port — but anything on your host trying to connect to `localhost:5432` (a GUI DB client, `psql`, etc.) may silently reach your existing local PostgreSQL instead of the container. The application itself is unaffected either way, since `api` always talks to the container over the internal Docker network (`db:5432`), never through the host-published port.
+
+To avoid this, publish PostgreSQL on a different host port with `POSTGRES_PORT`:
+
+```bash
+POSTGRES_PORT=5433 docker compose up -d --build
+```
+
+PowerShell:
+
+```powershell
+$env:POSTGRES_PORT = "5433"
+docker compose up -d --build
+```
+
+`api` continues to connect to `db:5432` internally regardless of `POSTGRES_PORT` — this only changes which host port reaches the container from outside Docker.
+
+### Testing API-key protection in Docker
+
+`REQUIRE_API_KEY` and `API_KEY` are read from your shell environment when present, defaulting to `REQUIRE_API_KEY=false` (open, matching local dev) if unset — no override file needed:
+
+```bash
+REQUIRE_API_KEY=true API_KEY=change-me docker compose up -d --build
+
+curl http://localhost:8000/api/v1/skills                              # 401, no key
+curl -H "x-api-key: change-me" http://localhost:8000/api/v1/skills    # 200
+```
+
+PowerShell:
+
+```powershell
+$env:REQUIRE_API_KEY = "true"
+$env:API_KEY = "change-me"
+docker compose up -d --build
+```
+
+`/health` and `/ready` remain public regardless of `REQUIRE_API_KEY`.
 
 ## Example
 
