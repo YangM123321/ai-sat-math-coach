@@ -1,0 +1,3 @@
+{"case_id": "eval_001", "question": "If 2x + 5 = 17, what is x?", "student_answer": "7", "student_work": "2x = 17 + 5, so 2x = 22 and x = 7", "expected_category": "procedural_error", "expected_subcategory": "inverse_operation_error", "human_review": false}
+{"case_id": "eval_002", "question": "If 3x = 18, what is x?", "student_answer": "6", "student_work": "Divide both sides by 3.", "expected_category": "none", "expected_subcategory": "none", "human_review": false}
+{"case_id": "eval_003", "question": "A circle has radius 4. What is its diameter?", "student_answer": "4", "student_work": "", "expected_category": "insufficient_evidence", "expected_subcategory": "unknown", "human_review": true}

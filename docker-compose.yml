@@ -1,0 +1,30 @@
+services:
+  api:
+    build: .
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://sat:sat@db:5432/sat_coach
+      DIAGNOSTIC_PROVIDER: rule_based
+      REQUIRE_API_KEY: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sat
+      POSTGRES_PASSWORD: sat
+      POSTGRES_DB: sat_coach
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sat -d sat_coach"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+volumes:
+  postgres_data:
