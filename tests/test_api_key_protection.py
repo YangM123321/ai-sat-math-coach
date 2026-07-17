@@ -1,10 +1,17 @@
 import os
+import re
 
 import pytest
 
 from app.core.config import get_settings
+from app.main import app
 
 TEST_API_KEY = "test-secret-key"
+
+# Paths intentionally exempt from API-key protection. Any route in the app's
+# live OpenAPI schema that is neither under /api/v1 nor listed here fails
+# test_every_declared_route_is_protected_or_explicitly_public below.
+PUBLIC_PATHS = {"/health", "/ready"}
 
 # One representative endpoint per protected router.
 PROTECTED_ENDPOINTS = [
@@ -74,3 +81,43 @@ def test_health_is_public_when_protection_disabled(client):
 def test_health_is_public_when_protection_enabled(client, enable_api_key):
     r = client.get("/health")
     assert r.status_code == 200
+
+
+def _concrete_path(openapi_path: str) -> str:
+    """Replace OpenAPI {param} placeholders with a harmless dummy segment."""
+    return re.sub(r"\{[^}]+\}", "dummy", openapi_path)
+
+
+def test_every_declared_route_is_protected_or_explicitly_public(client, enable_api_key):
+    """
+    Guards against the original bug class: a future router registered without
+    API-key protection. Walks the app's live OpenAPI schema (not hardcoded
+    paths) so it catches any route regardless of how it was wired up.
+    """
+    paths = app.openapi()["paths"]
+    checked = 0
+    for path, operations in paths.items():
+        if path in PUBLIC_PATHS:
+            continue
+        assert path.startswith("/api/v1"), (
+            f"{path} is neither under /api/v1 nor in PUBLIC_PATHS. "
+            "Either register it under the protected_api_router in app/main.py "
+            "or explicitly allowlist it as public in PUBLIC_PATHS."
+        )
+        concrete_path = _concrete_path(path)
+        for method in operations:
+            if method.lower() not in {"get", "post", "put", "patch", "delete"}:
+                continue
+            r = client.request(method.upper(), concrete_path)
+            assert r.status_code == 401, (
+                f"{method.upper()} {path} is not protected by require_api_key "
+                f"(expected 401, got {r.status_code})"
+            )
+            checked += 1
+    assert checked > 0, "no /api/v1 routes were found - route discovery may be broken"
+
+
+def test_public_paths_remain_public_when_protection_enabled(client, enable_api_key):
+    for path in PUBLIC_PATHS:
+        r = client.get(path)
+        assert r.status_code != 401

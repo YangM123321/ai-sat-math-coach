@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from app.db.base import Base
 from app.db.session import engine
 from app.core.config import get_settings
@@ -41,12 +41,18 @@ async def evaluation_not_found_handler(request, exc):
 @app.exception_handler(ExperimentNotFoundError)
 async def experiment_not_found_handler(request, exc):
     return await app_error_handler(request, ExperimentNotFound(str(exc)))
-app.include_router(router, dependencies=[Depends(require_api_key)])
-app.include_router(knowledge_router, dependencies=[Depends(require_api_key)])
-app.include_router(learning_router, dependencies=[Depends(require_api_key)])
-app.include_router(tutor_router, dependencies=[Depends(require_api_key)])
-app.include_router(dashboard_router, dependencies=[Depends(require_api_key)])
-app.include_router(evaluation_router, dependencies=[Depends(require_api_key)])
+# All /api/v1 endpoints require an API key (when REQUIRE_API_KEY=true). New
+# routers must be registered on this aggregator, not directly on `app`, to
+# inherit protection automatically. tests/test_api_key_protection.py enforces
+# this invariant against the live route table, independent of how routers are wired.
+protected_api_router = APIRouter(dependencies=[Depends(require_api_key)])
+protected_api_router.include_router(router)
+protected_api_router.include_router(knowledge_router)
+protected_api_router.include_router(learning_router)
+protected_api_router.include_router(tutor_router)
+protected_api_router.include_router(dashboard_router)
+protected_api_router.include_router(evaluation_router)
+app.include_router(protected_api_router)
 
 @app.get("/health", tags=["system"])
 def health() -> dict:
