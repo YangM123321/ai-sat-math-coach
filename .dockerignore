@@ -1,0 +1,50 @@
+.git/
+.github/
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables (keep .env.example available for image build context)
+.env
+.env.*
+!.env.example
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+tests/
+
+# Type checking / linting caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docs and misc project metadata not needed in image
+docs/
+README.md
+PROJECT_DEVELOPMENT_CONTRACT.md
