@@ -1,4 +1,12 @@
 """Seed a minimal SAT Math skill catalog for local development."""
+import sys
+from pathlib import Path
+
+# Allow running as `python scripts/seed_sat_skills.py` without setting
+# PYTHONPATH: only the script's own directory is on sys.path by default,
+# not the repository root where the `app` package lives.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from app.db.session import SessionLocal
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.schemas.knowledge import RelationshipCreate, RelationshipType, SkillCreate

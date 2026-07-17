@@ -37,11 +37,20 @@ A production-style portfolio milestone implementing the first core layer of AI S
 
 The included rule-based provider is a local development implementation, not a claim of production diagnostic intelligence. A vendor-backed LLM adapter and production mathematical OCR remain explicit integration work. The architecture supports them without changing domain contracts.
 
-## Local setup
+## Quick Start
+
+**Requirements:** Python 3.12 (the version this project is developed and tested against — see `.github/workflows/ci.yml`).
+
+Run every command below from the repository root.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+# Activate the virtual environment (pick the line for your shell):
+source .venv/bin/activate          # macOS / Linux
+source .venv/Scripts/activate      # Windows, Git Bash
+.venv\Scripts\activate             # Windows, cmd.exe or PowerShell
+
 pip install -r requirements.txt
 cp .env.example .env
 alembic upgrade head
@@ -50,10 +59,23 @@ uvicorn app.main:app --reload
 
 Open `http://127.0.0.1:8000/docs`.
 
+### Why run `alembic upgrade head` if SQLite can create tables automatically?
+
+For local SQLite development, `app/main.py` also calls `Base.metadata.create_all()` on startup as a convenience, so the app will still run even if this step is skipped. Running `alembic upgrade head` anyway is still recommended, because it's the only local way to actually exercise the real migration chain — the same chain that PostgreSQL (the production-representative database, see `docker-compose.yml`) relies on exclusively, with no such convenience fallback. Skipping this step locally means migrations go unverified until they're run against PostgreSQL.
+
 ## Tests
 
 ```bash
-pytest --cov=app --cov-report=term-missing
+pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+```
+
+This runs the full application test suite against SQLite, matching the CI `test` job exactly.
+
+A separate set of PostgreSQL-only migration reconciliation tests (`tests/test_migration_reconciliation.py`) is skipped automatically unless `MIGRATION_TEST_DATABASE_URL` points at a reachable PostgreSQL instance:
+
+```bash
+MIGRATION_TEST_DATABASE_URL=postgresql+psycopg://sat:sat@localhost:5432/sat_coach \
+    pytest tests/test_migration_reconciliation.py -v
 ```
 
 ## Docker
