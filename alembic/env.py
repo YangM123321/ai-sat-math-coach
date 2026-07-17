@@ -3,7 +3,10 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 from app.core.config import get_settings
 from app.db.base import Base
-from app.models import diagnostic  # noqa: F401
+# Import the models package itself (not a single submodule) so every model
+# registers on Base.metadata regardless of app.models/__init__.py's internal
+# import order. Required for autogenerate/`alembic check` to see the full schema.
+import app.models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

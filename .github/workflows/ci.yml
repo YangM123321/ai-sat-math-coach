@@ -14,3 +14,60 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pytest --cov=app --cov-report=term-missing --cov-fail-under=80
       - run: python -m compileall app
+
+  migrations:
+    runs-on: ubuntu-latest
+    # Validates the Alembic migration chain against PostgreSQL, matching the
+    # production database engine used in docker-compose.yml. Intentionally
+    # separate from the `test` job: pytest runs against SQLite and never
+    # touches Alembic, so it doesn't need this service container.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: sat
+          POSTGRES_PASSWORD: sat
+          POSTGRES_DB: sat_coach
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sat -d sat_coach"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://sat:sat@localhost:5432/sat_coach
+      DIAGNOSTIC_PROVIDER: rule_based
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Show migration history
+        run: alembic history --verbose
+
+      - name: Show migration heads
+        run: alembic heads
+
+      - name: Apply migration chain to a clean PostgreSQL database
+        run: |
+          echo "Running 'alembic upgrade head' against a clean PostgreSQL 16 database..."
+          if ! alembic upgrade head; then
+            echo "::error::Alembic migration chain failed to apply cleanly against PostgreSQL. See the traceback above for the failing revision."
+            exit 1
+          fi
+
+      - name: Verify database reached the expected head revision
+        run: |
+          CURRENT=$(alembic current 2>/dev/null | awk '{print $1}')
+          HEAD=$(alembic heads 2>/dev/null | awk '{print $1}')
+          echo "Database current revision: $CURRENT"
+          echo "Expected head revision:    $HEAD"
+          if [ -z "$HEAD" ] || [ "$CURRENT" != "$HEAD" ]; then
+            echo "::error::Database revision ('$CURRENT') does not match the expected head revision ('$HEAD') after upgrade."
+            exit 1
+          fi
+          echo "Database is at the expected head revision."
