@@ -12,7 +12,7 @@ class DiagnosticService:
         x=self.repo.create_result(attempt_id=a.id,payload=o.model_dump(mode='json'),confidence=score,confidence_breakdown=breakdown,requires_human_review=review,review_reason=reason,provider=self.provider.name,prompt_version=PROMPT_VERSION)
         return self.to_response(x)
     def to_response(self,x):
-        p=ProviderOutput.model_validate(x.payload)
+        p=StoredDiagnosticPayload.model_validate(x.payload)
         return DiagnosticResponse(diagnostic_id=x.id,attempt_id=x.attempt_id,student_id=x.attempt.student_id,correct=p.correct,domain=p.domain,skill=p.skill,subskill=p.subskill,error_category=p.error_category,error_subcategory=p.error_subcategory,affected_skill=p.affected_skill,error_step=p.error_step,observed_evidence=p.observed_evidence,root_cause=p.root_cause,explanation=p.explanation,recommended_action=p.recommended_action,confidence=x.confidence,confidence_breakdown=ConfidenceBreakdown.model_validate(x.confidence_breakdown),requires_human_review=x.requires_human_review,review_reason=x.review_reason,provider=x.provider,prompt_version=x.prompt_version,created_at=x.created_at)
     def get(self,i):
         x=self.repo.get(i)
