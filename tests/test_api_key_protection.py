@@ -13,6 +13,25 @@ TEST_API_KEY = "test-secret-key"
 # test_every_declared_route_is_protected_or_explicitly_public below.
 PUBLIC_PATHS = {"/health", "/ready"}
 
+# /api/v1 routes that intentionally do NOT require the shared API key,
+# because they authenticate callers a different way (Phase 1.5 PR 3):
+#   - login, refresh: no prior credential exists yet -- the request body
+#     itself (password / refresh token) is what's being verified.
+#   - logout: the refresh token, presented as the Bearer credential, is
+#     the sole authorization to revoke itself.
+#   - logout-all: requires a valid JWT access token instead.
+# /api/v1/auth/register is deliberately NOT in this set -- it still
+# requires the shared API key (no public sign-up surface yet), so it's
+# covered by the generic protected-route walk below like every other
+# router. Each exempt route's actual auth behavior is covered by
+# tests/test_auth_api.py, not by this file.
+API_KEY_EXEMPT_V1_PATHS = {
+    "/api/v1/auth/login",
+    "/api/v1/auth/refresh",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/logout-all",
+}
+
 # One representative endpoint per protected router.
 PROTECTED_ENDPOINTS = [
     ("GET", "/api/v1/students/stu_check/diagnostics"),
@@ -21,6 +40,7 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/api/v1/tutor/sessions/sess_missing"),
     ("GET", "/api/v1/dashboard/viewers/viewer_check/overview"),
     ("GET", "/api/v1/evaluation/runs"),
+    ("POST", "/api/v1/auth/register"),
 ]
 
 
@@ -97,7 +117,7 @@ def test_every_declared_route_is_protected_or_explicitly_public(client, enable_a
     paths = app.openapi()["paths"]
     checked = 0
     for path, operations in paths.items():
-        if path in PUBLIC_PATHS:
+        if path in PUBLIC_PATHS or path in API_KEY_EXEMPT_V1_PATHS:
             continue
         assert path.startswith("/api/v1"), (
             f"{path} is neither under /api/v1 nor in PUBLIC_PATHS. "

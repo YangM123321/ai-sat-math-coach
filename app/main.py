@@ -13,6 +13,7 @@ from app.api.routes.learning import router as learning_router
 from app.api.routes.tutor import router as tutor_router
 from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.evaluation import router as evaluation_router
+from app.api.routes.auth import router as auth_router
 from app.middleware.request_context import RequestContextMiddleware
 
 settings = get_settings()
@@ -53,6 +54,12 @@ protected_api_router.include_router(tutor_router)
 protected_api_router.include_router(dashboard_router)
 protected_api_router.include_router(evaluation_router)
 app.include_router(protected_api_router)
+
+# Mounted directly on `app`, not on protected_api_router: most auth routes
+# must be reachable by callers with no prior credential at all (that is
+# the point of them). Each route in app/api/routes/auth.py states its own
+# auth requirement explicitly instead of inheriting the shared API key.
+app.include_router(auth_router)
 
 @app.get("/health", tags=["system"])
 def health() -> dict:

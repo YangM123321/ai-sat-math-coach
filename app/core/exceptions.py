@@ -34,3 +34,22 @@ class EvaluationNotFound(AppError):
 class ExperimentNotFound(AppError):
     def __init__(self, experiment_id:str):
         super().__init__(404,'EXPERIMENT_NOT_FOUND','The requested experiment does not exist.',{'experiment_id':experiment_id})
+
+class EmailAlreadyRegistered(AppError):
+    def __init__(self, email:str):
+        super().__init__(409,'EMAIL_ALREADY_REGISTERED','An account with this email already exists.',{'email':email})
+class InvalidCredentials(AppError):
+    # Deliberately identical for wrong password, nonexistent email, and a
+    # disabled account -- no detail that would let a caller distinguish
+    # why a login attempt failed.
+    def __init__(self):
+        super().__init__(401,'INVALID_CREDENTIALS','Invalid email or password.')
+class InvalidToken(AppError):
+    # Deliberately identical for a missing/malformed/expired/wrong-issuer/
+    # wrong-audience/wrong-type access token, and for a valid token whose
+    # user no longer exists or is disabled.
+    def __init__(self):
+        super().__init__(401,'INVALID_TOKEN','The access token is missing, invalid, or expired.')
+class InvalidRefreshToken(AppError):
+    def __init__(self):
+        super().__init__(401,'INVALID_REFRESH_TOKEN','The refresh token is missing, invalid, expired, or has been revoked.')
