@@ -63,6 +63,31 @@ Open `http://127.0.0.1:8000/docs`.
 
 For local SQLite development, `app/main.py` also calls `Base.metadata.create_all()` on startup as a convenience, so the app will still run even if this step is skipped. Running `alembic upgrade head` anyway is still recommended, because it's the only local way to actually exercise the real migration chain — the same chain that PostgreSQL (the production-representative database, see `docker-compose.yml`) relies on exclusively, with no such convenience fallback. Skipping this step locally means migrations go unverified until they're run against PostgreSQL.
 
+## Configuration
+
+Configuration is centralized in `app/core/config.py` as a typed, validated `Settings` object (`pydantic-settings`), loaded from environment variables or a local `.env` file. `ENVIRONMENT` selects one of four values: `development`, `test`, `staging`, `production`.
+
+`development` and `test` require no additional configuration beyond `.env.example` — every new setting below has a permissive default so the existing local workflow is unaffected.
+
+### Production startup validation
+
+When `ENVIRONMENT=production`, `Settings` refuses to construct (the app fails to start, with every violation listed at once) unless all of the following hold:
+
+| Setting | Production requirement |
+|---|---|
+| `SECRET_KEY` | Set, at least 32 characters, not a known placeholder (e.g. `changeme`). Reserved for future token signing (Phase 1.5 authentication); enforced now so the bar is never lowered later. |
+| `DATABASE_URL` | Points at a server database (not SQLite) and explicitly requests an encrypted connection: `sslmode=require`/`verify-ca`/`verify-full`, or an equivalent driver-supported TLS parameter (e.g. `ssl=true`, `tls=1`), e.g. `postgresql+psycopg://user:pass@host:5432/db?sslmode=require`. `sslmode=disable`/`allow`/`prefer` do not count as explicit (`prefer` silently allows an unencrypted fallback). |
+| `CORS_ALLOWED_ORIGINS` | Non-empty, comma-separated list of explicit origins; must not contain `*`. |
+| `TRUSTED_HOSTS` | Non-empty, comma-separated list of explicit hostnames; must not contain `*`. |
+| `DEBUG` | Must be `false`. |
+| `API_KEY` | If `REQUIRE_API_KEY=true`, must be at least 16 characters and not a known placeholder. |
+
+**Staging is intentionally not enforced by this validation.** `ENVIRONMENT=staging` behaves like `development`/`test` for these checks in this baseline — staging is expected to *resemble* production operationally (see `docs/ARCHITECTURE.md`), but tightening its own startup validation is deferred to a later PR rather than bundled into this configuration baseline.
+
+`CORS_ALLOWED_ORIGINS` and `TRUSTED_HOSTS` accept a comma-separated string (e.g. `CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com`) rather than requiring JSON-array syntax.
+
+This PR adds the settings and their validation only — no CORS or trusted-host middleware is wired into the application yet; that is deferred to a later, separately-reviewed PR.
+
 ## Tests
 
 ```bash
