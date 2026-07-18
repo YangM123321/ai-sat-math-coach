@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     secret_key: str | None = None
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     trusted_hosts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    access_token_expire_minutes: int = Field(15, ge=1)
+    refresh_token_expire_days: int = Field(30, ge=1)
+    jwt_issuer: str = "ai-sat-math-coach"
+    jwt_audience: str = "ai-sat-math-coach-api"
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("cors_allowed_origins", "trusted_hosts", mode="before")
