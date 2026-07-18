@@ -20,8 +20,9 @@ from app.models.user import UserRole
 
 
 class AuthorizationService:
-    def __init__(self, dashboard_repository):
+    def __init__(self, dashboard_repository, audit_service=None):
         self.dashboard_repository = dashboard_repository
+        self.audit_service = audit_service
 
     def ensure_student_read_access(self, current_user, student_id: str) -> None:
         """Self, an assigned teacher, or an admin may read this student's data."""
@@ -29,7 +30,7 @@ class AuthorizationService:
             return
         if self._is_assigned_teacher(current_user, student_id):
             return
-        raise Forbidden()
+        self._deny(current_user, "STUDENT_READ_ACCESS_DENIED", target_user_id=student_id, resource_type="student")
 
     def ensure_student_write_access(self, current_user, student_id: str) -> None:
         """Only the student themselves or an admin may create/modify this
@@ -37,11 +38,11 @@ class AuthorizationService:
         with an active grant -- read-only for teachers in this PR."""
         if self._is_admin(current_user) or self._is_self(current_user, student_id):
             return
-        raise Forbidden()
+        self._deny(current_user, "STUDENT_WRITE_ACCESS_DENIED", target_user_id=student_id, resource_type="student")
 
     def ensure_admin(self, current_user) -> None:
         if not self._is_admin(current_user):
-            raise Forbidden()
+            self._deny(current_user, "NOT_ADMIN")
 
     def ensure_self(self, current_user, target_user_id: str) -> None:
         """For 'my own X' routes (e.g. a viewer's own overview) keyed by a
@@ -49,6 +50,19 @@ class AuthorizationService:
         caller must be an admin."""
         if self._is_admin(current_user) or self._is_self(current_user, target_user_id):
             return
+        self._deny(current_user, "NOT_SELF", target_user_id=target_user_id, resource_type="user")
+
+    def _deny(self, current_user, reason_code: str, *, target_user_id: str | None = None, resource_type: str | None = None) -> None:
+        if self.audit_service is not None:
+            self.audit_service.record(
+                "authorization.access_denied",
+                category="authorization",
+                outcome="denied",
+                actor_user_id=current_user.id,
+                target_user_id=target_user_id,
+                resource_type=resource_type,
+                reason_code=reason_code,
+            )
         raise Forbidden()
 
     @staticmethod

@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, Query, status
-from app.api.dependencies import get_authorization_service, get_current_user, get_dashboard_service, require_admin
+from app.api.dependencies import get_audit_service, get_authorization_service, get_current_user, get_dashboard_service, require_admin
 from app.core.exceptions import AppError
 from app.models.user import User
 from app.schemas.dashboard import *
+from app.services.audit_service import AuditService
 from app.services.authorization_service import AuthorizationService
 from app.services.dashboard_service import DashboardStudentDataNotFoundError
 router=APIRouter(prefix='/api/v1/dashboard',tags=['teacher-parent-dashboard'])
@@ -12,8 +13,10 @@ def translate(exc):
     return exc
 
 @router.post('/access-grants',response_model=AccessGrantResponse,status_code=status.HTTP_201_CREATED)
-def grant_access(request:AccessGrantCreate,service=Depends(get_dashboard_service),user:User=Depends(require_admin)):
-    return service.grant(request,created_by=user.id)
+def grant_access(request:AccessGrantCreate,service=Depends(get_dashboard_service),user:User=Depends(require_admin),audit:AuditService=Depends(get_audit_service)):
+    response=service.grant(request,created_by=user.id)
+    audit.record('authorization.access_granted',category='authorization',outcome='success',actor_user_id=user.id,target_user_id=request.student_id,resource_type='dashboard_access_grant',resource_id=response.id,metadata={'viewer_id':request.viewer_id,'role':request.role.value})
+    return response
 
 @router.get('/students/{student_id}',response_model=StudentDashboardResponse)
 def student_dashboard(student_id:str,service=Depends(get_dashboard_service),user:User=Depends(get_current_user),authz:AuthorizationService=Depends(get_authorization_service)):

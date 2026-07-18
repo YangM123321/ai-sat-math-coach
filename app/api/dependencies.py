@@ -94,10 +94,16 @@ def get_bearer_refresh_token(
         raise InvalidRefreshToken()
     return credentials.credentials
 
+from app.repositories.audit_repository import AuditRepository
+from app.services.audit_service import AuditService
+
+def get_audit_service(db=Depends(get_db)):
+    return AuditService(AuditRepository(db))
+
 from app.services.authorization_service import AuthorizationService
 
-def get_authorization_service(db=Depends(get_db)):
-    return AuthorizationService(DashboardRepository(db))
+def get_authorization_service(db=Depends(get_db), audit_service: AuditService = Depends(get_audit_service)):
+    return AuthorizationService(DashboardRepository(db), audit_service)
 
 def require_admin(
     user: User = Depends(get_current_user),

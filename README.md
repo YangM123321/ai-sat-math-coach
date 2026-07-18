@@ -280,3 +280,9 @@ See `docs/security/THREAT_MODEL.md` (T6/T7) for the authorization design and res
 Not yet implemented: password reset, email verification, MFA, OAuth/social login, rate limiting on login/refresh, and route-level authorization on any endpoint outside `/api/v1/auth` itself.
 
 See `docs/security/THREAT_MODEL.md` (T1/T4/T5) for the token/claim design, replay-detection behavior, and hashing rationale, and `app/services/auth_service.py`/`app/security/tokens.py` for the implementation.
+
+## Security Audit Logging (Phase 1.5 PR 5)
+
+Authentication outcomes, authorization denials, refresh-token reuse detection, and administrative access-grant creation are recorded to an append-only `audit_events` table via a centralized `AuditService`, kept separate from ordinary HTTP request logging. No password, password hash, raw JWT, or raw refresh token is ever stored.
+
+See `docs/security/THREAT_MODEL.md` (T16) for the full event matrix, schema, and fail-open rationale, and `app/services/audit_service.py` for the implementation.

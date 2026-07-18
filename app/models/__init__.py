@@ -16,3 +16,4 @@ from app.models.dashboard import DashboardAccessGrant, ProgressSnapshot
 
 from app.models.evaluation import EvaluationRun, EvaluationCaseResult, QualityMetricSnapshot, ImprovementExperiment
 from app.models.user import RefreshToken, User, UserRole
+from app.models.audit import AuditEvent
