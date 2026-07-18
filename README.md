@@ -260,3 +260,9 @@ Level 5 adds role-aware student summaries, viewer overviews, actionable alerts, 
 Level 6 adds versioned offline evaluation runs, case-level expected/actual comparisons, quality metric snapshots, and controlled improvement experiments. It records quality, latency, cost, and guardrail-aware release decisions without automatically deploying unverified changes.
 
 See `docs/LEVEL_6_PRD.md`, `docs/LEVEL_6_ENGINEERING_SPEC.md`, and `docs/LEVEL_6_API_EXAMPLES.md`.
+
+## Identity Schema (Phase 1.5)
+
+Adds the database identity foundation for future authentication and authorization work: a `users` table (unique email, password hash, role, active/disabled state, email-verification state, timestamps) and a `refresh_tokens` table (hashed token records with expiration and revocation tracking).
+
+**This is schema only.** There is no registration endpoint, login endpoint, JWT issuance, password-hashing service, refresh/logout endpoint, or route authorization yet — none of the tables are reachable through the API. See `docs/security/THREAT_MODEL.md` for the security architecture this schema is designed against.

@@ -15,3 +15,4 @@ from app.models.tutor import TutorSession, TutorMessage, TutorFeedback
 from app.models.dashboard import DashboardAccessGrant, ProgressSnapshot
 
 from app.models.evaluation import EvaluationRun, EvaluationCaseResult, QualityMetricSnapshot, ImprovementExperiment
+from app.models.user import RefreshToken, User, UserRole
