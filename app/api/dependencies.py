@@ -31,10 +31,11 @@ def get_tutor_service(db=Depends(get_db)):
     return TutorService(TutorRepository(db))
 
 from app.repositories.dashboard_repository import DashboardRepository
+from app.repositories.user_repository import UserRepository
 from app.services.dashboard_service import DashboardService
 
 def get_dashboard_service(db=Depends(get_db)):
-    return DashboardService(DashboardRepository(db))
+    return DashboardService(DashboardRepository(db), UserRepository(db))
 
 from app.repositories.evaluation_repository import EvaluationRepository
 from app.services.evaluation_service import EvaluationService
@@ -92,3 +93,19 @@ def get_bearer_refresh_token(
     if credentials is None:
         raise InvalidRefreshToken()
     return credentials.credentials
+
+from app.services.authorization_service import AuthorizationService
+
+def get_authorization_service(db=Depends(get_db)):
+    return AuthorizationService(DashboardRepository(db))
+
+def require_admin(
+    user: User = Depends(get_current_user),
+    authz: AuthorizationService = Depends(get_authorization_service),
+) -> User:
+    """Composed dependency for routes/routers that are admin-only in
+    their entirety (e.g. the evaluation router) -- equivalent to calling
+    get_current_user then authz.ensure_admin(user), but usable directly
+    in a router's `dependencies=[...]` list."""
+    authz.ensure_admin(user)
+    return user

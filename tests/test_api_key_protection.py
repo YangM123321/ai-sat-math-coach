@@ -83,14 +83,23 @@ def test_protected_endpoint_rejects_incorrect_api_key(client, enable_api_key, me
 @pytest.mark.parametrize("method,path", PROTECTED_ENDPOINTS)
 def test_protected_endpoint_accepts_correct_api_key(client, enable_api_key, method, path):
     r = client.request(method, path, headers={"x-api-key": enable_api_key})
-    assert r.status_code != 401
+    # Phase 1.5 PR 4: every domain route also requires a valid JWT
+    # (app.api.dependencies.get_current_user), so a correct API key alone
+    # no longer guarantees a non-401 response here -- it only guarantees
+    # the request isn't rejected by the API-key gate specifically. A 401
+    # for a missing/invalid access token is a separate, expected layer,
+    # covered by tests/test_authorization_api.py and the domain test
+    # files, not this one.
+    if r.status_code == 401:
+        assert r.json()["error"]["code"] != "INVALID_API_KEY"
 
 
 @pytest.mark.parametrize("method,path", PROTECTED_ENDPOINTS)
 def test_protected_endpoint_accessible_when_protection_disabled(client, method, path):
     assert get_settings().require_api_key is False
     r = client.request(method, path)
-    assert r.status_code != 401
+    if r.status_code == 401:
+        assert r.json()["error"]["code"] != "INVALID_API_KEY"
 
 
 def test_health_is_public_when_protection_disabled(client):

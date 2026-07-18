@@ -20,6 +20,6 @@ class DiagnosticService:
         return self.to_response(x)
     def list_student(self,sid,limit,offset):
         xs,total=self.repo.list_student(sid,limit,offset); return DiagnosticListResponse(items=[self.to_response(x) for x in xs],total=total)
-    def feedback(self,did,r):
+    def feedback(self,did,r,reviewer_id,reviewer_type):
         if not self.repo.get(did): raise NotFound(did)
-        x=self.repo.feedback(did,r); return FeedbackResponse(feedback_id=x.id,diagnostic_id=did,accepted=True)
+        x=self.repo.feedback(did,r,reviewer_id,reviewer_type); return FeedbackResponse(feedback_id=x.id,diagnostic_id=did,accepted=True)

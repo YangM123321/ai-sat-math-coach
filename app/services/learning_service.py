@@ -80,6 +80,14 @@ class LearningService:
         if not plan: raise LearningPlanNotFoundError(student_id)
         return self._response(plan)
 
+    def get_activity_owner_student_id(self, activity_id):
+        """Cheap ownership lookup for the route layer to authorize
+        against before performing the full update -- avoids threading
+        the authenticated principal through service business logic."""
+        activity=self.repository.get_activity(activity_id)
+        if not activity: raise LearningActivityNotFoundError(activity_id)
+        return activity.plan.student_id
+
     def update_activity(self, activity_id, request: LearningActivityUpdate):
         activity=self.repository.get_activity(activity_id)
         if not activity: raise LearningActivityNotFoundError(activity_id)

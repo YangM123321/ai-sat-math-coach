@@ -71,7 +71,12 @@ class DiagnosticResponse(BaseModel):
 class DiagnosticListResponse(BaseModel):
     items:list[DiagnosticResponse]; total:int
 class FeedbackRequest(BaseModel):
-    reviewer_id:str; reviewer_type:str=Field(pattern='^(student|teacher|tutor|parent|admin)$'); is_accurate:bool
+    # reviewer_id/reviewer_type are NOT accepted from the caller (Phase
+    # 1.5 PR 4) -- the service derives them from the authenticated
+    # principal (app/api/dependencies.py::get_current_user), never from
+    # the request body.
+    model_config=ConfigDict(extra='forbid')
+    is_accurate:bool
     corrected_error_category:ErrorCategory|None=None; corrected_error_subcategory:ErrorSubcategory|None=None; feedback_text:str|None=Field(None,max_length=2000)
 class FeedbackResponse(BaseModel):
     feedback_id:str; diagnostic_id:str; accepted:bool

@@ -53,3 +53,15 @@ class InvalidToken(AppError):
 class InvalidRefreshToken(AppError):
     def __init__(self):
         super().__init__(401,'INVALID_REFRESH_TOKEN','The refresh token is missing, invalid, expired, or has been revoked.')
+
+class Forbidden(AppError):
+    # Phase 1.5 PR 4: the single, consistent 403 used across every domain
+    # for "authenticated but not permitted" -- deliberately generic, no
+    # detail about which ownership/relationship check failed, so a
+    # response never reveals whether a resource exists, who owns it, or
+    # why access was denied.
+    def __init__(self):
+        super().__init__(403,'ACCESS_DENIED','You do not have permission to access this resource.')
+class UserNotFound(AppError):
+    def __init__(self, user_id:str):
+        super().__init__(404,'USER_NOT_FOUND','The referenced user does not exist.',{'user_id':user_id})

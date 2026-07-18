@@ -2,24 +2,24 @@
 
 ## 1. Purpose and scope
 
-This document threat-models the AI SAT Math Coach API as it exists today plus the
-Phase 1.5 authorization architecture **approved but not yet implemented** for
-upcoming PRs, so that PR4 onward (authorization/tenant isolation) is built
-against an explicit, written threat model rather than ad hoc judgment. It is an
-engineering artifact, not a compliance or legal document — it makes no
-FERPA/COPPA/GDPR compliance claims (see `docs/PROJECT_ROADMAP.md`/Phase 1.5
-investigation notes for that distinction).
+This document threat-models the AI SAT Math Coach API as it exists today plus
+remaining Phase 1.5 architecture (rate limiting, audit logging, CORS/
+TrustedHost enforcement) **approved but not yet implemented**, so later PRs
+are built against an explicit, written threat model rather than ad hoc
+judgment. It is an engineering artifact, not a compliance or legal document —
+it makes no FERPA/COPPA/GDPR compliance claims (see `docs/PROJECT_ROADMAP.md`/
+Phase 1.5 investigation notes for that distinction).
 
 **Throughout this document, anything described as "planned," "future," or
-"deferred" — including role-based *route-level* authorization, per-user/tenant
-isolation, rate limiting, audit logging, and CORS/TrustedHost enforcement — is
-architecture that has been approved for a later Phase 1.5 PR and does **not**
-exist in the codebase today. Password-hashing (Argon2id) and JWT/refresh-token
-authentication, by contrast, **are implemented** (Phase 1.5 PR 3) — see §3 and
-§8 (T1/T4/T5) for what that does and does not cover. Items marked "current" or
-described as "already in place" (§10) are live in `main` right now: the shared
-API key, PR1's configuration validation, PR 3's authentication endpoints, and
-the dashboard's `DashboardAccessGrant` check.**
+"deferred" — including rate limiting, audit logging, and CORS/TrustedHost
+enforcement — is architecture that has been approved for a later Phase 1.5 PR
+and does **not** exist in the codebase today. Password-hashing (Argon2id),
+JWT/refresh-token authentication (PR 3), and route-level authorization/tenant
+isolation (PR 4), by contrast, **are implemented** — see §3 and §8 (T1, T4-T7)
+for what that does and does not cover. Items marked "current" or described as
+"already in place" (§10) are live in `main` right now: the shared API key,
+PR1's configuration validation, PR 3's authentication endpoints, and PR 4's
+centralized `AuthorizationService`.**
 
 ## 2. Security philosophy
 
@@ -54,7 +54,8 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   (still rule/template-driven, not a live LLM call).
 - **Dashboard** (`dashboard.py`) — teacher/parent/admin views of a student's
   progress, gated by a `DashboardAccessGrant` viewer↔student↔role table — the
-  only place in the codebase with any real authorization logic today.
+  original source of the teacher-to-student trust relationship now reused by
+  `AuthorizationService` across every domain (PR 4).
 - **Evaluation** (`evaluation.py`) — offline quality/experiment tracking, not
   student-facing.
 - **Authentication** (`auth.py`, **already implemented**, Phase 1.5 PR 3) —
@@ -68,13 +69,17 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
 — no third-party OCR/AI vendor is called yet. Configuration (`app/core/config.py`,
 Phase 1.5 PR1, **already implemented**) is typed and, in production, refuses to
 start with missing/weak `SECRET_KEY`, non-TLS `DATABASE_URL`, wildcard
-`CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS`, `DEBUG=true`, or a weak `API_KEY`. **No
-CORS/TrustedHost middleware is wired into the app yet, and no per-user
-route-level authorization exists anywhere outside the dashboard's access-grant
-check** — a caller who authenticates via `/api/v1/auth` still hits every
-pre-existing `/api/v1/students/...`-style route with no ownership/role check
-applied to their identity. That authorization work is planned, not built (see
-§6, boundary 3, and §11).
+`CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS`, `DEBUG=true`, or a weak `API_KEY`.
+**Route-level authorization is now implemented** (Phase 1.5 PR 4,
+`app/services/authorization_service.py`): every domain route requires a valid
+JWT and derives access from the authenticated principal's own `role` and the
+`DashboardAccessGrant` relationship, never from a caller-supplied `student_id`/
+`viewer_id`/`role`. This PR's policy is deliberately simple: students have
+full access to their own records; teachers have **read-only** access to
+students they have an active grant for (no create/modify, even for an
+assigned student); admins have full access everywhere. **No CORS/TrustedHost
+middleware is wired into the app yet** — that remains planned, not built (see
+§11).
 
 ## 4. Protected assets
 
@@ -93,16 +98,17 @@ applied to their identity. That authorization work is planned, not built (see
 
 ## 5. Actors and attacker assumptions
 
-- **Legitimate students, teachers, admins** — real accounts and roles now exist
-  (`users.role`, PR 3), though nothing yet *checks* role/ownership on the
-  pre-existing domain routes (see §6, boundary 3) — and **holders of the
-  current shared API key** (internal/dev use, register only).
+- **Legitimate students, teachers, admins** — real accounts and roles exist
+  (`users.role`, PR 3), and every domain route now checks role/ownership via
+  `AuthorizationService` (PR 4) — and **holders of the current shared API
+  key** (internal/dev use, register only).
 - **Unauthenticated internet attacker**, relevant once staging/production exists.
-- **Authenticated-but-malicious actor** — a real or compromised account attempting
-  to access another tenant's data (horizontal) or admin functions (vertical).
-  This is now a real, distinct actor from "any API-key holder" (accounts exist),
-  but since no route-level authorization exists yet, *any* authenticated user
-  can currently reach *any* student's data via the pre-existing routes — see T7.
+- **Authenticated-but-malicious actor** — a real account attempting to access
+  another tenant's data (horizontal) or admin functions (vertical). Now
+  concretely mitigated for the domain routes covered by `AuthorizationService`
+  (T6/T7 mitigated) — see §11 for what's still open (rate limiting on the
+  authentication endpoints themselves, and the narrower FK-hardening scope
+  described there).
 - **Network attacker** able to observe/tamper with unencrypted traffic — motivates
   the TLS requirements PR1 already enforces for production `DATABASE_URL`.
 - Attacker is assumed to have full knowledge of this open-source codebase; no
@@ -116,8 +122,10 @@ applied to their identity. That authorization work is planned, not built (see
 2. **FastAPI app ↔ PostgreSQL** — network boundary; TLS required in production
    per PR1's config validation (already implemented).
 3. **Authenticated caller ↔ another tenant's data** — student A vs. student B,
-   teacher vs. an unlinked student. **Not enforced today; enforcement is
-   planned for a future PR** (see §11 residual risks).
+   teacher vs. an unlinked student. **Enforced (Phase 1.5 PR 4)** by
+   `AuthorizationService`, backed by `DashboardAccessGrant` (now with real FKs
+   to `users.id` — see §11 for what this migration deliberately did not
+   extend to).
 4. **FastAPI app ↔ external AI provider** (planned, not built) — no boundary
    exists yet; `RuleBasedProvider` makes no outbound calls (ADR 0002
    anticipates a real vendor adapter later).
@@ -133,8 +141,12 @@ applied to their identity. That authorization work is planned, not built (see
 - `/health`, `/ready` — public by design.
 - `POST /api/v1/diagnostics/from-image` — multipart upload, content-type
   allow-list, size-limited by `max_image_bytes`.
-- Caller-supplied `student_id` / `viewer_id` / `role` path and query parameters —
-  currently used directly as trust anchors with no ownership check.
+- `student_id` / `viewer_id` path parameters — no longer trusted directly
+  (Phase 1.5 PR 4): every route validates them against the authenticated
+  principal via `AuthorizationService` before use. `role` is never accepted
+  from a caller anywhere (register's request schema has no `role` field at
+  all; dashboard's `viewer_id`/`role` query params were removed from
+  `student_dashboard`/`create_snapshot`/`trends` in PR 4).
 - Environment variables / `.env` (`SECRET_KEY`, `API_KEY`, `DATABASE_URL`, ...).
 - The CI pipeline itself (dependency install, migration execution).
 - `/api/v1/auth/register` (**implemented**, API-key-protected),
@@ -153,11 +165,11 @@ applied to their identity. That authorization work is planned, not built (see
 | T3 | Weak or leaked secrets | Critical | **Partially mitigated (implemented in PR1)** | PR1 refuses production startup on missing/short/placeholder `SECRET_KEY`/`API_KEY` and non-TLS `DATABASE_URL`. `SECRET_KEY` now also signs JWTs (PR3), raising its blast radius if leaked. Residual: secrets still live in plain env vars/`.env`, no secrets-manager integration, no CI secret scanning yet. |
 | T4 | Token theft and replay | High | **Mitigated (implemented in PR3)** | Access tokens are short-lived (15 min default) JWTs, HS256-signed, with `iss`/`aud`/`exp`/`type` validated on every use and the signing algorithm always pinned (never taken from the token) -- closes the "alg:none"/algorithm-confusion class of bugs. Never logged. Residual: no CORS/TrustedHost middleware yet means no browser-side transport-origin restriction (T12); no access-token revocation store (a stolen token remains valid for its full, short lifetime). |
 | T5 | Refresh-token abuse | High | **Mitigated (implemented in PR3)** | Refresh tokens are opaque high-entropy random values; only a SHA-256 hash is persisted (`refresh_tokens.token_hash`), never the raw value. Rotated on every use; the token just used is revoked (`revoked_at`, `replaced_by_id`). Replaying an already-*rotated* token (not merely a logged-out one) revokes every active session for that user. |
-| T6 | Privilege escalation (vertical) | Critical | **Current, exploitable** | `DashboardService._authorize` (`app/services/dashboard_service.py`) skips the grant check entirely when the caller-supplied `role` query param equals `admin` — any shared-API-key holder can self-assert `role=admin` and read any student's dashboard. |
-| T7 | Broken object-level authorization (IDOR/BOLA) | Critical | **Current, exploitable** | `student_id` is a caller-supplied path parameter with **no ownership check** on diagnostics/knowledge/learning routes (`students/{student_id}/...`). IDs are opaque UUID-derived strings, so this is obfuscation, not authorization — any leaked ID grants full read (and in some cases write) access. |
+| T6 | Privilege escalation (vertical) | Critical | **Mitigated (implemented in PR4)** | Admin status is derived exclusively from the authenticated `User.role` loaded fresh from the database (`AuthorizationService._is_admin`) — there is no caller-supplied `role` field anywhere in the request surface for any domain route; `role` cannot be smuggled into registration either (`RegisterRequest` has no such field, `extra="forbid"`). The specific bug (self-asserted `role=admin` query param bypassing the dashboard grant check) is gone along with the query params themselves. |
+| T7 | Broken object-level authorization (IDOR/BOLA) | Critical | **Mitigated (implemented in PR4)** | Every domain route (diagnostics/knowledge/learning/tutor/dashboard) derives access from `AuthorizationService.ensure_student_read_access`/`ensure_student_write_access`, checking self-ownership, the `DashboardAccessGrant` relationship for teachers, or admin — never a bare caller-supplied `student_id` alone. Opaque-ID routes (`diagnostic_id`, `plan_id`, `activity_id`, `session_id`) fetch the record first and authorize against its actual owning `student_id`. Residual: the underlying `student_id` columns on `student_attempts`/`student_skill_mastery`/`mastery_events`/`learning_plans`/`tutor_sessions` still aren't FK-constrained to `users.id` (see §11) — the authorization check itself doesn't depend on that, but a `student_id` referencing a nonexistent user is not rejected at the DB layer in those tables. |
 | T8 | Prompt injection | Medium | Deferred — not implemented (AI-provider phase) | No LLM is called today (`RuleBasedProvider` is deterministic). Flagged now because `work_text`/`student_answer` will become LLM input once a real provider lands (ADR 0002) — student text must never be treated as trusted instructions. |
 | T9 | Malicious or malformed student input | Medium | **Current, partial** | Free-text fields are stored/returned as-is; the API does not sanitize for HTML/script content (JSON responses only — any future frontend rendering this data must treat it as untrusted). No general request-body size cap exists beyond the image-upload path. |
-| T10 | Sensitive student-data exposure | High | **Current, moderate** | No direct PII collected today (`student_id` is opaque), but T6/T7 already allow cross-student data exposure, and a leaked `student_id`↔real-identity mapping (e.g., a school roster) re-identifies a real student from academically sensitive data. |
+| T10 | Sensitive student-data exposure | High | **Largely mitigated (PR4 closed the T6/T7 exposure paths)** | No direct PII collected today (`student_id` is opaque). Cross-student exposure via T6/T7 is closed; residual exposure would require a leaked `student_id`↔real-identity mapping (e.g., a school roster) re-identifying a real student from academically sensitive data — a data-handling concern outside this API's authorization boundary. |
 | T11 | API abuse / denial of service | Medium | **Current, unmitigated** | No rate limiting, no general body-size cap, no concurrency/timeout controls. Any endpoint can be flooded with no backpressure. |
 | T12 | Insecure CORS / trusted-host configuration | Medium | **Partially mitigated (implemented in PR1); enforcement planned** | PR1 validates `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` and refuses insecure production values, but **no `CORSMiddleware`/`TrustedHostMiddleware` is wired into `app/main.py` yet** — validated config currently has no runtime effect. |
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
@@ -166,13 +178,18 @@ applied to their identity. That authorization work is planned, not built (see
 
 ## 9. Abuse cases
 
-- **A:** A shared-API-key holder calls
+- **A (closed in PR 4):** A shared-API-key holder used to be able to call
   `GET /api/v1/dashboard/students/{any_student_id}?viewer_id=me&role=admin` and
-  receives full dashboard data for a student with no relationship to `viewer_id`
-  (exploits T6, current).
-- **B:** An attacker obtains one leaked `student_id` (support ticket, screenshot,
-  log line) and retrieves that student's full diagnostic/tutor/learning history
-  via any `students/{student_id}/...` route (exploits T7, current).
+  receive full dashboard data for a student with no relationship to `viewer_id`.
+  Both the `viewer_id`/`role` query params and the vulnerable
+  `DashboardService._authorize` bypass are gone; access now derives from the
+  authenticated principal only (exploited T6, mitigated).
+- **B (closed in PR 4):** An attacker who obtains one leaked `student_id`
+  (support ticket, screenshot, log line) can no longer retrieve that student's
+  diagnostic/tutor/learning history via any `students/{student_id}/...` route
+  without being that student, an assigned teacher, or an admin — every such
+  route now calls `AuthorizationService.ensure_student_read_access` first
+  (exploited T7, mitigated).
 - **C:** An attacker scripts high-volume `POST /api/v1/diagnostics` requests,
   exhausting database connections and degrading service for everyone (exploits
   T11, current).
@@ -190,12 +207,22 @@ applied to their identity. That authorization work is planned, not built (see
   after a plain `/logout` (not a rotation) — is treated as an ordinary invalid
   token, not a reuse signal (see `app/services/auth_service.py`); only reuse of
   a *rotated* token triggers mass revocation.
-- **F:** Even after a caller obtains a legitimate access token for their own
-  student account, they call
+- **F (closed in PR 4):** A caller with a legitimate access token for their own
+  student account used to be able to call
   `GET /api/v1/students/{another_students_id}/diagnostics` and receive that
-  other student's full history — authenticating via PR 3 grants no protection
-  here, since no route yet derives access from the authenticated principal
-  (exploits T7, current, unchanged by PR 3).
+  other student's full history — authentication alone (PR 3) provided no
+  protection here. `ensure_student_read_access` now rejects this with `403
+  ACCESS_DENIED` unless the caller is that student, an assigned teacher, or an
+  admin (exploited T7, mitigated).
+- **G (new, hypothetical -- would require bypassing PR 4):** An attacker who
+  is an authenticated teacher attempts to write to (not merely read) an
+  assigned student's record -- e.g. `PATCH /api/v1/learning-activities/{id}`
+  or `POST /api/v1/tutor/sessions`. This PR's simplified policy makes
+  teachers read-only regardless of grant status, so
+  `ensure_student_write_access` rejects every such attempt with `403
+  ACCESS_DENIED` even for a correctly assigned teacher (tested explicitly in
+  `tests/test_learning_api.py::test_teacher_cannot_update_an_assigned_students_activity`
+  and the equivalent tutor test).
 
 ## 10. Mitigations
 
@@ -214,12 +241,17 @@ applied to their identity. That authorization work is planned, not built (see
   `iss`/`aud`/`exp`/`type` validation, opaque hashed refresh tokens with
   rotation and reuse detection, `logout`/`logout-all` (T1, T4, T5) — shipped
   in Phase 1.5 PR 3.
+- Authorization/tenant isolation — centralized `AuthorizationService`
+  (`app/services/authorization_service.py`) derives every access decision
+  from the authenticated principal's role and the `DashboardAccessGrant`
+  relationship (now FK-hardened to `users.id`); no route accepts a
+  caller-supplied `student_id`/`viewer_id`/`role` as a trust decision anymore
+  (T6, T7, largely T10) — shipped in Phase 1.5 PR 4. Policy is simple by
+  design: students full access to their own records, teachers read-only on
+  assigned students, admins full access.
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- Authorization/tenant isolation — replace caller-supplied `student_id`/
-  `viewer_id`/`role` with dependencies derived from the authenticated principal
-  (T6, T7, T10).
 - Audit logging of security-sensitive actions.
 - Rate limiting behind a `RateLimiter` interface (`MemoryRateLimiter` first,
   Redis deferred) (T2, T11).
@@ -230,12 +262,26 @@ exists in the codebase yet:**
 
 ## 11. Residual risks
 
-- **T6/T7 are open right now** and remain open until the "Authorization /
-  tenant isolation" PR is implemented — this is now the single highest-priority
-  follow-on work, since T1/T4/T5 (authentication) closed in PR 3. Authenticated
-  users are real now, but every pre-existing domain route still trusts
-  caller-supplied `student_id`/`viewer_id`/`role` instead of the authenticated
-  principal — authentication without authorization is not a complete control.
+- **T6/T7 are mitigated as of PR 4**, but not eliminated in every dimension:
+  - The `student_id` columns on `student_attempts`, `student_skill_mastery`,
+    `mastery_events`, `learning_plans`, and `tutor_sessions` are still plain
+    strings, **not** FK-constrained to `users.id` (unlike
+    `dashboard_access_grants.viewer_id`/`student_id`, which PR 4 did harden).
+    This was a deliberate scope decision: adding those FKs would have broken
+    every pre-existing test fixture using made-up student IDs and is a larger,
+    separately-reviewable migration. The authorization check itself
+    (`current_user.id == student_id`) does not depend on that FK existing, so
+    this is a data-integrity gap, not an authorization bypass.
+  - Mastery evidence submission (`POST /api/v1/mastery/evidence`) currently
+    permits a student to submit evidence about themselves (self/admin write
+    rule, applied uniformly) — a self-grading integrity consideration flagged
+    during design, not blocking, but worth revisiting if evidence tampering
+    becomes a real concern.
+  - `ProgressSnapshot` creation (`POST /api/v1/dashboard/students/{id}/snapshots`)
+    is now self/admin-only under the simplified write policy, meaning an
+    assigned teacher can no longer trigger a snapshot for their own student —
+    a usability tradeoff of the "teachers are read-only" policy choice, not a
+    security gap.
 - **T2 remains open**: login/refresh have no rate limiting yet.
 - **T12 remains open** until CORS/TrustedHost middleware is actually wired
   (config is validated but not yet enforced at runtime).
@@ -264,21 +310,20 @@ exists in the codebase yet:**
 - Development/test environments are never exposed to the public internet and
   are intentionally exempt from production-grade secret/CORS/TLS enforcement
   (`Environment.development`/`test` in `app/core/config.py`).
-- **This system must not be exposed to real, non-test student data in a
-  publicly reachable deployment until authorization (PR4) also lands.**
-  Authentication (PR 3) is now implemented, but on its own it only proves who
-  a caller is — it does not yet restrict what student data they can reach
-  (see T7, residual risks above).
+- **Authentication (PR 3) and authorization (PR 4) are both now implemented.**
+  This system still should not be exposed to real, non-test student data in a
+  publicly reachable deployment until rate limiting (T2/T11) and audit logging
+  are in place — see §11 residual risks and §13.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
-Identity schema (PR 2B) and authentication (PR 3) are implemented; everything
-below is still approved architecture that will be addressed in its own future
-PR per the approved Phase 1.5 roadmap.
+Identity schema (PR 2B), authentication (PR 3), and authorization/tenant
+isolation (PR 4) are implemented; everything below is still approved
+architecture that will be addressed in its own future PR per the approved
+Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
-| Authorization / tenant isolation | T6, T7, largely T10 |
 | Audit logging | Strengthens detection for T1, T6, T7 |
 | Rate limiting and abuse protection | T2, T11 |
 | CORS/TrustedHost middleware wiring | T12 |
