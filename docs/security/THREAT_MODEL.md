@@ -3,23 +3,24 @@
 ## 1. Purpose and scope
 
 This document threat-models the AI SAT Math Coach API as it exists today plus
-remaining Phase 1.5 architecture (rate limiting, audit logging, CORS/
-TrustedHost enforcement) **approved but not yet implemented**, so later PRs
-are built against an explicit, written threat model rather than ad hoc
-judgment. It is an engineering artifact, not a compliance or legal document —
-it makes no FERPA/COPPA/GDPR compliance claims (see `docs/PROJECT_ROADMAP.md`/
-Phase 1.5 investigation notes for that distinction).
+remaining Phase 1.5 architecture (rate limiting, CORS/TrustedHost enforcement)
+**approved but not yet implemented**, so later PRs are built against an
+explicit, written threat model rather than ad hoc judgment. It is an
+engineering artifact, not a compliance or legal document — it makes no
+FERPA/COPPA/GDPR compliance claims (see `docs/PROJECT_ROADMAP.md`/Phase 1.5
+investigation notes for that distinction).
 
 **Throughout this document, anything described as "planned," "future," or
-"deferred" — including rate limiting, audit logging, and CORS/TrustedHost
-enforcement — is architecture that has been approved for a later Phase 1.5 PR
-and does **not** exist in the codebase today. Password-hashing (Argon2id),
-JWT/refresh-token authentication (PR 3), and route-level authorization/tenant
-isolation (PR 4), by contrast, **are implemented** — see §3 and §8 (T1, T4-T7)
-for what that does and does not cover. Items marked "current" or described as
-"already in place" (§10) are live in `main` right now: the shared API key,
-PR1's configuration validation, PR 3's authentication endpoints, and PR 4's
-centralized `AuthorizationService`.**
+"deferred" — including rate limiting and CORS/TrustedHost enforcement — is
+architecture that has been approved for a later Phase 1.5 PR and does **not**
+exist in the codebase today. Password-hashing (Argon2id), JWT/refresh-token
+authentication (PR 3), route-level authorization/tenant isolation (PR 4), and
+security audit logging (PR 5), by contrast, **are implemented** — see §3 and
+§8 (T1, T4-T7, T16) for what that does and does not cover. Items marked
+"current" or described as "already in place" (§10) are live in `main` right
+now: the shared API key, PR1's configuration validation, PR 3's authentication
+endpoints, PR 4's centralized `AuthorizationService`, and PR 5's
+`AuditService`.**
 
 ## 2. Security philosophy
 
@@ -35,6 +36,16 @@ insecure default and logging a warning. Every subsequent Phase 1.5 PR
 (authentication, authorization, rate limiting) is expected to preserve this
 default-deny posture: unauthenticated or unauthorized requests must be
 rejected by default, not admitted unless explicitly proven safe.
+
+**One deliberate, explicit exception:** `AuditService.record` (PR 5) is
+**fail-open** — a failure to write an audit row never blocks or fails the
+authentication/authorization action it observes. This was an explicit
+architecture-review decision, not an oversight: no ambient per-request
+transaction ties an audit write to the business action it accompanies (every
+repository in this codebase commits immediately), so fail-closed here could
+not actually undo anything anyway; and fail-closed would turn an audit-store
+outage into an authentication outage, a worse availability failure than the
+detection gap it would close. See T16.
 
 ## 3. System overview
 
@@ -63,6 +74,12 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   access-token issuance, opaque hashed refresh tokens with rotation and
   reuse detection, logout, logout-all. See §8 (T1/T4/T5) for what this
   covers.
+- **Audit logging** (`app/services/audit_service.py`, **already
+  implemented**, Phase 1.5 PR 5) — a dedicated, append-only `audit_events`
+  table recording authentication outcomes, authorization
+  denials/grants, and administrative access-grant creation, kept
+  separate from `RequestContextMiddleware`'s ordinary HTTP logs. See §8
+  (T16) for what this covers and does not.
 
 `/health` and `/ready` are intentionally public. Image upload
 (`POST /api/v1/diagnostics/from-image`) fails closed (`NoOpOCRProvider`, HTTP 501)
@@ -94,7 +111,7 @@ middleware is wired into the app yet** — that remains planned, not built (see
 | Password hashes (Argon2id), refresh-token hashes (SHA-256) | Critical | Implemented (PR 3) — see `users.password_hash`, `refresh_tokens.token_hash` |
 | Future: email verification/password-reset tokens | Critical | Do not exist yet — no verification/reset workflow is built |
 | Application availability | Moderate | No SLA today, but DoS degrades every user |
-| Audit trail integrity (future) | Moderate | Planned for a later PR; no audit log exists today |
+| Audit trail (`audit_events`) | Moderate | **Implemented (PR 5).** Append-only; no password/JWT/refresh-token material stored — see T16 |
 
 ## 5. Actors and attacker assumptions
 
@@ -175,6 +192,7 @@ middleware is wired into the app yet** — that remains planned, not built (see
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
 | T14 | Logging of secrets or personal data | Medium | **Low, fragile** | `RequestContextMiddleware` logs method/path/status/duration/request_id only — no bodies, headers, or field values. Risk is forward-looking: once JWTs/passwords/PII exist, no redaction filter exists yet to catch a careless future log statement. |
 | T15 | Dependency and supply-chain risk | Medium | **Current, unmitigated** | `requirements.txt` uses range pins, not hash pins. No dependency-vulnerability scan, secret scan, SAST, or container-image scan in CI (`.github/workflows/ci.yml` runs tests + migration validation only). |
+| T16 | Insufficient audit trail for security-relevant events | Medium | **Mitigated (implemented in PR5)** | `AuditService` (`app/services/audit_service.py`) writes a stable-named, append-only row to `audit_events` for every registration/login/refresh/logout(-all) outcome, every `AuthorizationService` denial, refresh-token reuse detection, and dashboard access-grant creation. No password, password hash, raw JWT, or raw refresh token is ever a parameter `record()` accepts, so none can reach the table even by accident; raw email addresses are also deliberately not stored (actor/target are opaque `users.id` values only). Writes are fail-open (see §2) and there is no query API or automated retention/purge in this PR — see §11. |
 
 ## 9. Abuse cases
 
@@ -249,10 +267,14 @@ middleware is wired into the app yet** — that remains planned, not built (see
   (T6, T7, largely T10) — shipped in Phase 1.5 PR 4. Policy is simple by
   design: students full access to their own records, teachers read-only on
   assigned students, admins full access.
+- Security audit logging — `AuditService` (`app/services/audit_service.py`)
+  writes an append-only trail of authentication outcomes, authorization
+  denials/grants, and administrative access-grant creation to
+  `audit_events`, kept separate from ordinary HTTP request logging (T16) —
+  shipped in Phase 1.5 PR 5.
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- Audit logging of security-sensitive actions.
 - Rate limiting behind a `RateLimiter` interface (`MemoryRateLimiter` first,
   Redis deferred) (T2, T11).
 - CORS/TrustedHost middleware wiring using the settings PR1 already validates (T12).
@@ -294,6 +316,17 @@ exists in the codebase yet:**
   flag the requirement now, not close it.
 - **T15** has no automated tooling yet; manual review of `requirements.txt`
   is the only current control.
+- **T16 residuals:** `AuditService.record` is fail-open (§2) — an attacker
+  or outage that makes `audit_events` unwritable suppresses detection
+  silently while the application keeps functioning; this is an accepted
+  trade-off against the alternative (fail-closed availability risk), not an
+  oversight. There is no query/read API for `audit_events` in this PR (direct
+  DB access only) and no automated retention/purge job — the table grows
+  unboundedly until a future PR adds one. `AuthorizationService` records a
+  denial on every failed `ensure_*` check but does **not** record every
+  successful check, by design (§8 T16) — volume tracks failed/attack traffic,
+  not normal traffic, but this also means there is no full "successful access"
+  audit trail, only denials and administrative grants.
 - Physical/provider-level infrastructure risk and legal/compliance obligations
   (FERPA/COPPA/state student-privacy law) are out of scope for this engineering
   threat model and require separate legal review.
@@ -310,21 +343,20 @@ exists in the codebase yet:**
 - Development/test environments are never exposed to the public internet and
   are intentionally exempt from production-grade secret/CORS/TLS enforcement
   (`Environment.development`/`test` in `app/core/config.py`).
-- **Authentication (PR 3) and authorization (PR 4) are both now implemented.**
-  This system still should not be exposed to real, non-test student data in a
-  publicly reachable deployment until rate limiting (T2/T11) and audit logging
-  are in place — see §11 residual risks and §13.
+- **Authentication (PR 3), authorization (PR 4), and audit logging (PR 5) are
+  all now implemented.** This system still should not be exposed to real,
+  non-test student data in a publicly reachable deployment until rate
+  limiting (T2/T11) is in place — see §11 residual risks and §13.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
-Identity schema (PR 2B), authentication (PR 3), and authorization/tenant
-isolation (PR 4) are implemented; everything below is still approved
-architecture that will be addressed in its own future PR per the approved
-Phase 1.5 roadmap.
+Identity schema (PR 2B), authentication (PR 3), authorization/tenant
+isolation (PR 4), and audit logging (PR 5) are implemented; everything below
+is still approved architecture that will be addressed in its own future PR
+per the approved Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
-| Audit logging | Strengthens detection for T1, T6, T7 |
 | Rate limiting and abuse protection | T2, T11 |
 | CORS/TrustedHost middleware wiring | T12 |
 | DevSecOps CI checks (secret/dependency/SAST/container scanning) | T3, T15 |

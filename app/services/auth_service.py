@@ -34,11 +34,24 @@ class EmailAlreadyRegisteredError(Exception):
 
 
 class InvalidCredentialsError(Exception):
-    pass
+    """`reason`/`user_id` are optional, internal-only detail for audit
+    logging (app/api/routes/auth.py) -- every case still maps to the
+    exact same generic 401 response (see translate() and
+    tests/test_auth_api.py::test_login_error_is_byte_identical_across_failure_reasons),
+    so no enumeration signal reaches the caller."""
+    def __init__(self, reason: str | None = None, user_id: str | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.user_id = user_id
 
 
 class InvalidRefreshTokenError(Exception):
-    pass
+    """See InvalidCredentialsError's docstring -- same audit-only,
+    response-invisible `reason`/`user_id` pattern."""
+    def __init__(self, reason: str | None = None, user_id: str | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.user_id = user_id
 
 
 class AuthService:
@@ -63,13 +76,13 @@ class AuthService:
             # attacker distinguish "no such account" from "wrong
             # password" by response latency.
             self.password_service.verify_dummy()
-            raise InvalidCredentialsError()
+            raise InvalidCredentialsError("ACCOUNT_NOT_FOUND")
         if not self.password_service.verify(password, user.password_hash):
-            raise InvalidCredentialsError()
+            raise InvalidCredentialsError("INVALID_PASSWORD", user_id=user.id)
         if not user.is_active:
             # Identical error to the two cases above -- see
             # InvalidCredentials in app/core/exceptions.py.
-            raise InvalidCredentialsError()
+            raise InvalidCredentialsError("ACCOUNT_INACTIVE", user_id=user.id)
         token_response, _ = self._issue_tokens(user)
         return token_response
 
@@ -77,7 +90,7 @@ class AuthService:
         token_hash = hash_refresh_token(raw_refresh_token)
         token = self.repository.get_refresh_token_by_hash(token_hash)
         if token is None:
-            raise InvalidRefreshTokenError()
+            raise InvalidRefreshTokenError("TOKEN_NOT_FOUND")
         if token.revoked_at is not None:
             if token.replaced_by_id is not None:
                 # This token was revoked because it was rotated out (not
@@ -89,12 +102,13 @@ class AuthService:
                 # rejection below with no side effects -- presenting an
                 # already-logged-out token isn't itself a theft signal.
                 self.repository.revoke_all_refresh_tokens_for_user(token.user_id)
-            raise InvalidRefreshTokenError()
+                raise InvalidRefreshTokenError("REFRESH_TOKEN_REUSE", user_id=token.user_id)
+            raise InvalidRefreshTokenError("TOKEN_ALREADY_REVOKED", user_id=token.user_id)
         if _as_aware_utc(token.expires_at) <= datetime.now(timezone.utc):
-            raise InvalidRefreshTokenError()
+            raise InvalidRefreshTokenError("TOKEN_EXPIRED", user_id=token.user_id)
         user = self.repository.get_by_id(token.user_id)
         if user is None or not user.is_active:
-            raise InvalidRefreshTokenError()
+            raise InvalidRefreshTokenError("OWNER_INACTIVE", user_id=token.user_id)
         token_response, new_row = self._issue_tokens(user)
         self.repository.revoke_refresh_token(token, replaced_by_id=new_row.id)
         return token_response
