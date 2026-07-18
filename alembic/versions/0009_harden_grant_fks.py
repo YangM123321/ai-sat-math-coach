@@ -1,6 +1,6 @@
 """Harden dashboard_access_grants with real FKs to users (Phase 1.5 PR 4).
 
-Revision ID: 0009_harden_dashboard_access_grant_fks
+Revision ID: 0009_harden_grant_fks
 Revises: 0008_identity_schema
 
 dashboard_access_grants is reused (beyond the dashboard feature) as the
@@ -26,11 +26,24 @@ security assumptions). If this migration is ever run against a database
 with pre-PR-2B grant rows, it will fail loudly (FK violation) rather than
 silently orphan the relationship, which is the correct fail-closed
 behavior here.
+
+Revision-id length note
+------------------------
+Alembic's own `alembic_version.version_num` bookkeeping column defaults
+to VARCHAR(32) -- a revision id longer than 32 characters upgrades fine
+against SQLite (which doesn't enforce VARCHAR length) but fails against
+PostgreSQL with `StringDataRightTruncation` on the very last step (the
+`UPDATE alembic_version SET version_num=...` bookkeeping write), after
+the migration's own DDL has already run. This id was originally
+`0009_harden_dashboard_access_grant_fks` (38 chars) and failed exactly
+this way in CI's Postgres-only `migrations` job; every other revision id
+in this project must stay at or under 32 characters (`0007_reconcile_
+diagnostic_schema` is exactly 32 -- the practical ceiling).
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0009_harden_dashboard_access_grant_fks"
+revision = "0009_harden_grant_fks"
 down_revision = "0008_identity_schema"
 branch_labels = None
 depends_on = None

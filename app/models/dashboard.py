@@ -8,7 +8,7 @@ class DashboardAccessGrant(Base):
     """The one persisted teacher-to-student trust relationship, reused
     (beyond the dashboard feature) by AuthorizationService for Phase 1.5
     PR 4 route-level authorization -- see
-    alembic/versions/0009_harden_dashboard_access_grant_fks.py.
+    alembic/versions/0009_harden_grant_fks.py.
     viewer_id/student_id are real FKs to users.id; created_by stays a
     plain audit-trail string, not part of the trust check itself."""
     __tablename__='dashboard_access_grants'
