@@ -9,5 +9,6 @@ class Repository:
     def get(self,i): return self.db.get(DiagnosticResult,i)
     def list_student(self,sid,limit,offset):
         q=select(DiagnosticResult).join(StudentAttempt).where(StudentAttempt.student_id==sid).order_by(DiagnosticResult.created_at.desc()); all_=list(self.db.scalars(q).all()); return all_[offset:offset+limit],len(all_)
-    def feedback(self,did,r):
-        x=DiagnosticFeedback(diagnostic_id=did,data=r.model_dump(mode='json')); self.db.add(x); self.db.commit(); self.db.refresh(x); return x
+    def feedback(self,did,r,reviewer_id,reviewer_type):
+        data={**r.model_dump(mode='json'),'reviewer_id':reviewer_id,'reviewer_type':reviewer_type}
+        x=DiagnosticFeedback(diagnostic_id=did,data=data); self.db.add(x); self.db.commit(); self.db.refresh(x); return x

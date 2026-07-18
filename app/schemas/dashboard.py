@@ -8,10 +8,12 @@ class RiskLevel(str,Enum):
     low='low'; medium='medium'; high='high'; unknown='unknown'
 
 class AccessGrantCreate(BaseModel):
+    # created_by is NOT accepted from the caller (Phase 1.5 PR 4) -- the
+    # service derives it from the authenticated admin creating the grant
+    # (app/api/dependencies.py::get_current_user), never from the body.
     viewer_id:str=Field(min_length=1,max_length=128)
     student_id:str=Field(min_length=1,max_length=128)
     role:ViewerRole
-    created_by:str=Field(min_length=1,max_length=128)
 class AccessGrantResponse(BaseModel):
     id:str; viewer_id:str; student_id:str; role:ViewerRole; active:bool; created_at:datetime
 

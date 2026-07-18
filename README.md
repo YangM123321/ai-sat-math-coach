@@ -265,11 +265,17 @@ See `docs/LEVEL_6_PRD.md`, `docs/LEVEL_6_ENGINEERING_SPEC.md`, and `docs/LEVEL_6
 
 Adds the database identity foundation for authentication and future authorization work: a `users` table (unique email, password hash, role, active/disabled state, email-verification state, timestamps) and a `refresh_tokens` table (hashed token records with expiration and revocation tracking).
 
-Authentication behavior built on top of this schema is described below (Phase 1.5 PR 3). **Route-level authorization is still not implemented** — existing student/teacher/dashboard endpoints do not yet check the authenticated caller's identity or role; that is future Phase 1.5 work. See `docs/security/THREAT_MODEL.md` for the security architecture this schema is designed against.
+Authentication and authorization built on top of this schema are described below (Phase 1.5 PR 3 and PR 4). See `docs/security/THREAT_MODEL.md` for the security architecture this schema is designed against.
 
 ## Authentication (Phase 1.5 PR 3)
 
 `/api/v1/auth` provides registration, login, token refresh, logout, and logout-all, built on the identity schema above. Registration is API-key-protected (no public sign-up surface yet); login/refresh/logout authenticate a different way per endpoint instead of the shared API key. Access is via short-lived JWT access tokens plus rotated, hashed refresh tokens; passwords are hashed with Argon2id.
+
+## Authorization (Phase 1.5 PR 4)
+
+Every domain route (diagnostics, knowledge/mastery, learning plans, tutor, dashboard, evaluation) now requires a valid access token and derives access from the authenticated caller — never from a caller-supplied `student_id`, `viewer_id`, or `role`. Policy: students have full access to their own records; teachers have read-only access to students they're explicitly assigned to (via the same access-grant relationship the dashboard already used); admins have full access. Evaluation and skill-catalog management are admin-only.
+
+See `docs/security/THREAT_MODEL.md` (T6/T7) for the authorization design and residual scope, and `app/services/authorization_service.py` for the implementation.
 
 Not yet implemented: password reset, email verification, MFA, OAuth/social login, rate limiting on login/refresh, and route-level authorization on any endpoint outside `/api/v1/auth` itself.
 

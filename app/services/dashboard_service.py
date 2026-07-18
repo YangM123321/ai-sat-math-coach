@@ -1,19 +1,26 @@
 from datetime import date, datetime, timezone
+from app.core.exceptions import UserNotFound
 from app.models.dashboard import DashboardAccessGrant, ProgressSnapshot
 from app.schemas.dashboard import *
 
 DATA_VERSION='dashboard-v1.0'
-class DashboardAccessDeniedError(Exception): pass
 class DashboardStudentDataNotFoundError(Exception): pass
 
 class DashboardService:
-    def __init__(self,repository): self.repository=repository
-    def grant(self,request:AccessGrantCreate):
-        item=DashboardAccessGrant(viewer_id=request.viewer_id,student_id=request.student_id,role=request.role.value,active=True,created_by=request.created_by)
+    """Authorization (who may call which method with which student_id) is
+    decided entirely at the route layer (app/api/routes/dashboard.py) via
+    the centralized AuthorizationService, before any of these methods
+    run -- this service no longer makes its own access decisions (see
+    Phase 1.5 PR 4; the removed DashboardAccessDeniedError/_authorize
+    used to take a caller-supplied viewer_id/role)."""
+    def __init__(self,repository,user_repository): self.repository=repository; self.user_repository=user_repository
+    def grant(self,request:AccessGrantCreate,created_by:str):
+        if self.user_repository.get_by_id(request.viewer_id) is None: raise UserNotFound(request.viewer_id)
+        if self.user_repository.get_by_id(request.student_id) is None: raise UserNotFound(request.student_id)
+        item=DashboardAccessGrant(viewer_id=request.viewer_id,student_id=request.student_id,role=request.role.value,active=True,created_by=created_by)
         saved=self.repository.save_grant(item)
         return AccessGrantResponse(id=saved.id,viewer_id=saved.viewer_id,student_id=saved.student_id,role=saved.role,active=saved.active,created_at=saved.created_at)
-    def dashboard(self,student_id,viewer_id,role):
-        self._authorize(student_id,viewer_id,role)
+    def dashboard(self,student_id):
         return self._build(student_id)
     def overview(self,viewer_id,role=None):
         grants=self.repository.grants(viewer_id,role.value if role else None)
@@ -22,16 +29,12 @@ class DashboardService:
             d=self._build(grant.student_id,allow_empty=True)
             items.append(ViewerOverviewItem(student_id=grant.student_id,role=grant.role,risk_level=d.risk_level,overall_mastery=d.metrics.overall_mastery,mastery_confidence=d.metrics.mastery_confidence,active_alert_count=len(d.alerts),next_activity_id=d.next_activity_id))
         return ViewerOverviewResponse(viewer_id=viewer_id,items=items,total=len(items),generated_at=datetime.now(timezone.utc))
-    def snapshot(self,student_id,viewer_id,role):
-        dashboard=self.dashboard(student_id,viewer_id,role)
+    def snapshot(self,student_id):
+        dashboard=self.dashboard(student_id)
         item=ProgressSnapshot(student_id=student_id,snapshot_date=date.today().isoformat(),overall_mastery=dashboard.metrics.overall_mastery,mastery_confidence=dashboard.metrics.mastery_confidence,diagnostic_accuracy=dashboard.metrics.diagnostic_accuracy,plan_completion_rate=dashboard.metrics.active_plan_completion_rate,tutor_sessions_completed=dashboard.metrics.completed_tutor_sessions,weak_skills=[x.model_dump() for x in dashboard.weak_skills],strengths=[x.model_dump() for x in dashboard.strengths],generated_by=DATA_VERSION)
         return self._snapshot_response(self.repository.save_snapshot(item))
-    def trends(self,student_id,viewer_id,role,limit):
-        self._authorize(student_id,viewer_id,role)
+    def trends(self,student_id,limit):
         return TrendResponse(student_id=student_id,snapshots=[self._snapshot_response(x) for x in self.repository.snapshots(student_id,limit)])
-    def _authorize(self,student_id,viewer_id,role):
-        if role==ViewerRole.admin:return
-        if not self.repository.has_access(viewer_id,student_id,role.value): raise DashboardAccessDeniedError()
     def _build(self,student_id,allow_empty=False):
         masteries=self.repository.masteries(student_id); total,correct=self.repository.diagnostic_counts(student_id); plan=self.repository.active_plan(student_id); tutor_completed=self.repository.completed_tutor_sessions(student_id)
         if not masteries and total==0 and not plan and not allow_empty: raise DashboardStudentDataNotFoundError(student_id)
