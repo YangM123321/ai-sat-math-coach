@@ -97,6 +97,8 @@ pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 
 This runs the full application test suite against SQLite, matching the CI `test` job exactly.
 
+Each pytest **session** (process) uses its own SQLite database file, created fresh in a pytest-managed temporary directory outside the repository (`tests/conftest.py`'s `pytest_configure`/`pytest_unconfigure`) — never a fixed path in the repo root. This means two full test-suite runs can be started at the same time (e.g. two terminals, or CI matrix jobs) without one run's `drop_all`/`create_all` interfering with the other's. Within a session, tables are still dropped and recreated before every individual test, exactly as before.
+
 A separate set of PostgreSQL-only migration reconciliation tests (`tests/test_migration_reconciliation.py`) is skipped automatically unless `MIGRATION_TEST_DATABASE_URL` points at a reachable PostgreSQL instance:
 
 ```bash
