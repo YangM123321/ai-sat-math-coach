@@ -81,6 +81,7 @@ When `ENVIRONMENT=production`, `Settings` refuses to construct (the app fails to
 | `TRUSTED_HOSTS` | Non-empty, comma-separated list of explicit hostnames; must not contain `*`. |
 | `DEBUG` | Must be `false`. |
 | `API_KEY` | If `REQUIRE_API_KEY=true`, must be at least 16 characters and not a known placeholder. |
+| `RATE_LIMIT_ENABLED` | Must be `true`. Protects `/api/v1/auth/*` from credential-stuffing/brute-force abuse (see Rate Limiting, below). |
 
 **Staging is intentionally not enforced by this validation.** `ENVIRONMENT=staging` behaves like `development`/`test` for these checks in this baseline — staging is expected to *resemble* production operationally (see `docs/ARCHITECTURE.md`), but tightening its own startup validation is deferred to a later PR rather than bundled into this configuration baseline.
 
@@ -286,3 +287,9 @@ See `docs/security/THREAT_MODEL.md` (T1/T4/T5) for the token/claim design, repla
 Authentication outcomes, authorization denials, refresh-token reuse detection, and administrative access-grant creation are recorded to an append-only `audit_events` table via a centralized `AuditService`, kept separate from ordinary HTTP request logging. No password, password hash, raw JWT, or raw refresh token is ever stored.
 
 See `docs/security/THREAT_MODEL.md` (T16) for the full event matrix, schema, and fail-open rationale, and `app/services/audit_service.py` for the implementation.
+
+## Rate Limiting (Phase 1.5 PR 6)
+
+`/api/v1/auth/*` is throttled by a sliding-window `RateLimiter`: login has its own per-IP and per-account (normalized email) tiers, the other four auth endpoints share a coarser per-IP tier. A tripped limit returns `429` with `Retry-After`/`X-RateLimit-*` headers and is recorded as an audit event. Off by default (`RATE_LIMIT_ENABLED=false`); production startup refuses to boot without it explicitly enabled.
+
+See `docs/security/THREAT_MODEL.md` (T2) for the algorithm, configuration, fail-open rationale, and the Redis migration path, and `app/services/rate_limiter_service.py` for the implementation.

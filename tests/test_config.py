@@ -14,6 +14,7 @@ VALID_PRODUCTION_ENV = {
     "DEBUG": "false",
     "REQUIRE_API_KEY": "false",
     "API_KEY": "",
+    "RATE_LIMIT_ENABLED": "true",
 }
 
 
@@ -106,6 +107,7 @@ def test_production_boots_when_fully_configured():
         ({"TRUSTED_HOSTS": ""}, "TRUSTED_HOSTS"),
         ({"TRUSTED_HOSTS": "*"}, "TRUSTED_HOSTS"),
         ({"DEBUG": "true"}, "DEBUG"),
+        ({"RATE_LIMIT_ENABLED": "false"}, "RATE_LIMIT_ENABLED"),
     ],
 )
 def test_production_refuses_individual_violations(override, expected_message):

@@ -76,6 +76,23 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = Field(30, ge=1)
     jwt_issuer: str = "ai-sat-math-coach"
     jwt_audience: str = "ai-sat-math-coach-api"
+
+    # --- Rate limiting (Phase 1.5 PR 6) -----------------------------------
+    # Off by default -- mirrors require_api_key's precedent (a security
+    # control that defaults off in dev/test, on by explicit choice) so the
+    # existing test suite's many register/login calls are unaffected.
+    # Production startup validation below requires this to be true.
+    rate_limit_enabled: bool = False
+    # Login gets its own, tighter IP tier plus a per-account (email) tier --
+    # the classic credential-stuffing target (T2).
+    rate_limit_login_ip_max_attempts: int = Field(10, ge=1)
+    rate_limit_login_ip_window_seconds: int = Field(300, ge=1)
+    rate_limit_login_account_max_attempts: int = Field(5, ge=1)
+    rate_limit_login_account_window_seconds: int = Field(300, ge=1)
+    # Shared coarse per-IP backpressure for register/refresh/logout/logout-all.
+    rate_limit_auth_ip_max_attempts: int = Field(30, ge=1)
+    rate_limit_auth_ip_window_seconds: int = Field(300, ge=1)
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("cors_allowed_origins", "trusted_hosts", mode="before")
@@ -121,6 +138,12 @@ class Settings(BaseSettings):
                     f"API_KEY must be set to a value of at least {_MIN_API_KEY_LENGTH} characters "
                     "(missing, too short, or a known placeholder) because REQUIRE_API_KEY is true."
                 )
+
+        if not self.rate_limit_enabled:
+            problems.append(
+                "RATE_LIMIT_ENABLED must be true in production to protect authentication "
+                "endpoints from credential-stuffing/brute-force abuse."
+            )
 
         if problems:
             joined = "\n  - ".join(problems)
