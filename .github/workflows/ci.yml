@@ -95,3 +95,34 @@ jobs:
         run: python -m pip install pip-audit
       - name: Audit installed dependencies for known vulnerabilities
         run: python -m pip_audit
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    # Independent of test/migrations/security (no `needs:`) -- same
+    # rationale as the security (pip-audit) job: a secret-scanning finding
+    # isn't causally related to other jobs' outcomes, so gating it behind
+    # them would only delay the signal. Read-only: this job only checks
+    # out the repo and scans it locally; it never needs to write anything.
+    permissions:
+      contents: read
+    steps:
+      # v6, not v4: gitleaks-action@v3 requires the Node 24 runtime, and
+      # actions/checkout@v6 is the version the action's own docs validate
+      # against for that runtime (v2/actions/checkout@v4 are being
+      # deprecated by GitHub -- Node 20 support ends Sept 16, 2026).
+      - uses: actions/checkout@v6
+        with:
+          # Full history, not the default shallow (fetch-depth: 1) clone --
+          # this control exists to catch secrets committed anywhere in
+          # history, not merely in the currently checked-out tree. Matches
+          # the action's own documented usage.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disabled explicitly rather than relying on the read-only
+          # permissions block above to make these calls fail silently:
+          # this job has no PR-commenting or artifact-upload role by
+          # design, not by accident.
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false

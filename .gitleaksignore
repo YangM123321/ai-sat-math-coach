@@ -1,0 +1,7 @@
+# Reviewed, non-secret documentation placeholder ("change-me") in a
+# curl example under README.md's "Testing API-key protection in Docker"
+# section, from historical commit 568461c789f33f2e4cfd36c69985bdf450f3727f.
+# Not a real credential -- see docs/security/THREAT_MODEL.md (T3) for the
+# review. This is the only entry in this file; do not add broad rule-wide,
+# path-wide, or commit-wide exclusions here.
+568461c789f33f2e4cfd36c69985bdf450f3727f:README.md:curl-auth-header:162

@@ -185,18 +185,28 @@ docker compose up -d --build
 `REQUIRE_API_KEY` and `API_KEY` are read from your shell environment when present, defaulting to `REQUIRE_API_KEY=false` (open, matching local dev) if unset — no override file needed:
 
 ```bash
-REQUIRE_API_KEY=true API_KEY=change-me docker compose up -d --build
+REQUIRE_API_KEY=true API_KEY=<your-api-key> docker compose up -d --build
 
-curl http://localhost:8000/api/v1/skills                              # 401, no key
-curl -H "x-api-key: change-me" http://localhost:8000/api/v1/skills    # 200
+curl http://localhost:8000/api/v1/skills                              # 401 INVALID_API_KEY, no key
+curl -H "x-api-key: <your-api-key>" http://localhost:8000/api/v1/skills    # 401 INVALID_TOKEN, no bearer token
 ```
 
 PowerShell:
 
 ```powershell
 $env:REQUIRE_API_KEY = "true"
-$env:API_KEY = "change-me"
+$env:API_KEY = "<your-api-key>"
 docker compose up -d --build
+```
+
+The API key alone only satisfies the API-key gate (`app/security/api_key.py`) in front of every `/api/v1/*` route. Every route in this aggregator also requires a valid, authenticated bearer access token (Phase 1.5 PR 4 authorization, see below) -- so a request with a correct `x-api-key` but no `Authorization` header still fails, with `401 INVALID_TOKEN`, not `200`.
+
+A complete request needs both headers -- the API key, and a bearer access token obtained from `POST /api/v1/auth/login` (see Authentication, below):
+
+```bash
+curl -H "x-api-key: $API_KEY" \
+     -H "Authorization: Bearer $ACCESS_TOKEN" \
+     http://localhost:8000/api/v1/skills    # 200
 ```
 
 `/health` and `/ready` remain public regardless of `REQUIRE_API_KEY`.
