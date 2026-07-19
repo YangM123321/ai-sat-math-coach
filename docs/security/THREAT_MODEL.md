@@ -2,25 +2,23 @@
 
 ## 1. Purpose and scope
 
-This document threat-models the AI SAT Math Coach API as it exists today plus
-remaining Phase 1.5 architecture (CORS/TrustedHost enforcement) **approved but
-not yet implemented**, so later PRs are built against an explicit, written
-threat model rather than ad hoc judgment. It is an engineering artifact, not a
-compliance or legal document — it makes no FERPA/COPPA/GDPR compliance claims
-(see `docs/PROJECT_ROADMAP.md`/Phase 1.5 investigation notes for that
-distinction).
+This document threat-models the AI SAT Math Coach API as it exists today. It
+is an engineering artifact, not a compliance or legal document — it makes no
+FERPA/COPPA/GDPR compliance claims (see `docs/PROJECT_ROADMAP.md`/Phase 1.5
+investigation notes for that distinction).
 
 **Throughout this document, anything described as "planned," "future," or
-"deferred" — including CORS/TrustedHost enforcement — is architecture that has
-been approved for a later Phase 1.5 PR and does **not** exist in the codebase
-today. Password-hashing (Argon2id), JWT/refresh-token authentication (PR 3),
-route-level authorization/tenant isolation (PR 4), security audit logging
-(PR 5), and rate limiting on authentication endpoints (PR 6), by contrast,
-**are implemented** — see §3 and §8 (T1, T2, T4-T7, T16) for what that does
-and does not cover. Items marked "current" or described as "already in place"
-(§10) are live in `main` right now: the shared API key, PR1's configuration
-validation, PR 3's authentication endpoints, PR 4's centralized
-`AuthorizationService`, PR 5's `AuditService`, and PR 6's `RateLimiter`.**
+"deferred" is architecture that has been approved for a later Phase 1.5 PR and
+does **not** exist in the codebase today. Password-hashing (Argon2id),
+JWT/refresh-token authentication (PR 3), route-level authorization/tenant
+isolation (PR 4), security audit logging (PR 5), rate limiting on
+authentication endpoints (PR 6), and CORS/TrustedHost enforcement (PR 7), by
+contrast, **are implemented** — see §3 and §8 (T1, T2, T4-T7, T12, T16) for
+what that does and does not cover. Items marked "current" or described as
+"already in place" (§10) are live in `main` right now: the shared API key,
+PR1's configuration validation, PR 3's authentication endpoints, PR 4's
+centralized `AuthorizationService`, PR 5's `AuditService`, PR 6's
+`RateLimiter`, and PR 7's CORS/TrustedHost middleware.**
 
 ## 2. Security philosophy
 
@@ -100,6 +98,12 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   endpoints share a coarser per-IP tier. A tripped limit returns `429` with
   `Retry-After`/`X-RateLimit-*` headers and is itself an audit event. See §8
   (T2) for what this covers and does not.
+- **CORS / Trusted Host enforcement** (`app/middleware/security.py`,
+  **already implemented**, Phase 1.5 PR 7) — `CORSMiddleware` and
+  `TrustedHostMiddleware` (Starlette built-ins) wired at runtime, consuming
+  `Settings.cors_allowed_origins`/`trusted_hosts` (PR1) as-is with no new
+  configuration or duplicate validation. See §8 (T12) for what this covers
+  and does not.
 
 `/health` and `/ready` are intentionally public. Image upload
 (`POST /api/v1/diagnostics/from-image`) fails closed (`NoOpOCRProvider`, HTTP 501)
@@ -114,9 +118,9 @@ JWT and derives access from the authenticated principal's own `role` and the
 `viewer_id`/`role`. This PR's policy is deliberately simple: students have
 full access to their own records; teachers have **read-only** access to
 students they have an active grant for (no create/modify, even for an
-assigned student); admins have full access everywhere. **No CORS/TrustedHost
-middleware is wired into the app yet** — that remains planned, not built (see
-§11).
+assigned student); admins have full access everywhere. **CORS/TrustedHost
+middleware is now wired** (Phase 1.5 PR 7, `app/middleware/security.py`) —
+see §8 (T12) for the enforced behavior.
 
 ## 4. Protected assets
 
@@ -200,7 +204,7 @@ middleware is wired into the app yet** — that remains planned, not built (see
 | T1 | Account takeover | Critical | **Mitigated (implemented in PR3, strengthened in PR6)** | Argon2id password hashing (`app/security/password_hashing.py`); login rejects a disabled account and returns an identical generic error for wrong-password/no-such-account/disabled (no enumeration signal); `logout-all` supports revoking every session; login is now also rate-limited per-IP and per-account (T2, PR6). Residual: no email-based re-verification/notification on password change (no password-change endpoint exists at all yet). |
 | T2 | Credential stuffing / brute force | High | **Mitigated (implemented in PR6)** | `/api/v1/auth/login` is throttled by a sliding-window `RateLimiter` on two independent tiers — per-IP (`RATE_LIMIT_LOGIN_IP_*`, default 10/5min) and per-account/normalized-email (`RATE_LIMIT_LOGIN_ACCOUNT_*`, default 5/5min) — so a botnet spreading attempts across many IPs at one victim account is still caught by the account tier. Register/refresh/logout/logout-all share a coarser per-IP tier (`RATE_LIMIT_AUTH_IP_*`). A tripped limit returns a generic `429 RATE_LIMITED` (no detail on which tier tripped, matching `InvalidCredentials`'s non-enumeration philosophy) with `Retry-After`/`X-RateLimit-*` headers, and is itself audited (`auth.login.rate_limited`/`auth.rate_limited`). Off by default in dev/test (mirrors `require_api_key`'s precedent); production startup refuses to boot without `RATE_LIMIT_ENABLED=true` (`app/core/config.py`). Residual: in-memory backend is per-process only — see T2 in §11. |
 | T3 | Weak or leaked secrets | Critical | **Partially mitigated (implemented in PR1)** | PR1 refuses production startup on missing/short/placeholder `SECRET_KEY`/`API_KEY` and non-TLS `DATABASE_URL`. `SECRET_KEY` now also signs JWTs (PR3), raising its blast radius if leaked. Residual: secrets still live in plain env vars/`.env`, no secrets-manager integration, no CI secret scanning yet. |
-| T4 | Token theft and replay | High | **Mitigated (implemented in PR3)** | Access tokens are short-lived (15 min default) JWTs, HS256-signed, with `iss`/`aud`/`exp`/`type` validated on every use and the signing algorithm always pinned (never taken from the token) -- closes the "alg:none"/algorithm-confusion class of bugs. Never logged. Residual: no CORS/TrustedHost middleware yet means no browser-side transport-origin restriction (T12); no access-token revocation store (a stolen token remains valid for its full, short lifetime). |
+| T4 | Token theft and replay | High | **Mitigated (implemented in PR3, strengthened in PR7)** | Access tokens are short-lived (15 min default) JWTs, HS256-signed, with `iss`/`aud`/`exp`/`type` validated on every use and the signing algorithm always pinned (never taken from the token) -- closes the "alg:none"/algorithm-confusion class of bugs. Never logged. CORS enforcement (T12, PR7) now restricts which browser origins can read a response carrying a token at all. Residual: no access-token revocation store (a stolen token remains valid for its full, short lifetime). |
 | T5 | Refresh-token abuse | High | **Mitigated (implemented in PR3)** | Refresh tokens are opaque high-entropy random values; only a SHA-256 hash is persisted (`refresh_tokens.token_hash`), never the raw value. Rotated on every use; the token just used is revoked (`revoked_at`, `replaced_by_id`). Replaying an already-*rotated* token (not merely a logged-out one) revokes every active session for that user. |
 | T6 | Privilege escalation (vertical) | Critical | **Mitigated (implemented in PR4)** | Admin status is derived exclusively from the authenticated `User.role` loaded fresh from the database (`AuthorizationService._is_admin`) — there is no caller-supplied `role` field anywhere in the request surface for any domain route; `role` cannot be smuggled into registration either (`RegisterRequest` has no such field, `extra="forbid"`). The specific bug (self-asserted `role=admin` query param bypassing the dashboard grant check) is gone along with the query params themselves. |
 | T7 | Broken object-level authorization (IDOR/BOLA) | Critical | **Mitigated (implemented in PR4)** | Every domain route (diagnostics/knowledge/learning/tutor/dashboard) derives access from `AuthorizationService.ensure_student_read_access`/`ensure_student_write_access`, checking self-ownership, the `DashboardAccessGrant` relationship for teachers, or admin — never a bare caller-supplied `student_id` alone. Opaque-ID routes (`diagnostic_id`, `plan_id`, `activity_id`, `session_id`) fetch the record first and authorize against its actual owning `student_id`. Residual: the underlying `student_id` columns on `student_attempts`/`student_skill_mastery`/`mastery_events`/`learning_plans`/`tutor_sessions` still aren't FK-constrained to `users.id` (see §11) — the authorization check itself doesn't depend on that, but a `student_id` referencing a nonexistent user is not rejected at the DB layer in those tables. |
@@ -208,7 +212,7 @@ middleware is wired into the app yet** — that remains planned, not built (see
 | T9 | Malicious or malformed student input | Medium | **Current, partial** | Free-text fields are stored/returned as-is; the API does not sanitize for HTML/script content (JSON responses only — any future frontend rendering this data must treat it as untrusted). No general request-body size cap exists beyond the image-upload path. |
 | T10 | Sensitive student-data exposure | High | **Largely mitigated (PR4 closed the T6/T7 exposure paths)** | No direct PII collected today (`student_id` is opaque). Cross-student exposure via T6/T7 is closed; residual exposure would require a leaked `student_id`↔real-identity mapping (e.g., a school roster) re-identifying a real student from academically sensitive data — a data-handling concern outside this API's authorization boundary. |
 | T11 | API abuse / denial of service | Medium | **Partially mitigated (PR6, auth endpoints only)** | `/api/v1/auth/*` now has per-IP backpressure (see T2). Every other `/api/v1/*` route (diagnostics/knowledge/learning/tutor/dashboard/evaluation) remains unprotected — no general rate limiting, no general body-size cap, no concurrency/timeout controls. Any non-auth endpoint can still be flooded with no backpressure. |
-| T12 | Insecure CORS / trusted-host configuration | Medium | **Partially mitigated (implemented in PR1); enforcement planned** | PR1 validates `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` and refuses insecure production values, but **no `CORSMiddleware`/`TrustedHostMiddleware` is wired into `app/main.py` yet** — validated config currently has no runtime effect. |
+| T12 | Insecure CORS / trusted-host configuration | Medium | **Mitigated (implemented in PR7)** | `CORSMiddleware`/`TrustedHostMiddleware` (Starlette built-ins) are now wired in `app/main.py` via `app/middleware/security.py`, consuming PR1's already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` directly -- no new settings, no duplicate validation. A mismatched `Host` header gets Starlette's built-in `400 Invalid host header` (left unmodified -- see design notes in `app/middleware/security.py`); a disallowed CORS origin never receives `Access-Control-Allow-Origin` (browsers block the read; the server itself still processes and returns the response for a non-preflight request -- CORS is a browser-side control, not a server-side reject). `allow_methods`/`allow_headers` are explicit lists (`GET`/`POST`/`PATCH` and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID`), not `"*"` -- this API's surface is small and fully known, so there was no compatibility reason to fall back to a wildcard. Empty-list semantics differ deliberately by design: empty `TRUSTED_HOSTS` means allow **all** hosts (matches Starlette's own `None`-defaults-to-`["*"]` behavior), while empty `CORS_ALLOWED_ORIGINS` means allow **no** browser origins (an empty allowlist, not a wildcard) -- both are dev/test-only states, since production requires both non-empty (PR1, unchanged by this PR). `www_redirect` is disabled (an API should never 301 a non-GET request). |
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
 | T14 | Logging of secrets or personal data | Medium | **Low, fragile** | `RequestContextMiddleware` logs method/path/status/duration/request_id only — no bodies, headers, or field values. Risk is forward-looking: once JWTs/passwords/PII exist, no redaction filter exists yet to catch a careless future log statement. |
 | T15 | Dependency and supply-chain risk | Medium | **Current, unmitigated** | `requirements.txt` uses range pins, not hash pins. No dependency-vulnerability scan, secret scan, SAST, or container-image scan in CI (`.github/workflows/ci.yml` runs tests + migration validation only). |
@@ -268,6 +272,17 @@ middleware is wired into the app yet** — that remains planned, not built (see
   email, independent of source IP) catches it regardless of how the attempts
   are distributed (exploits/tests T2, mitigated; see
   `tests/test_rate_limiting_auth_api.py::test_login_account_tier_blocks_before_ip_tier_for_one_target_email`).
+- **I (closed in PR 7):** A malicious website at `https://evil.example.com`
+  tries to make a browser-based cross-origin `fetch()` call to this API
+  using a student's already-stored JWT (e.g. from a compromised browser
+  extension) to read response data back into its own JS. Before PR7, no
+  `CORSMiddleware` was wired in at all, so *any* origin's simple request
+  reached the API and (absent any CORS header expectation on the attacker's
+  side) could still be abused in specific browser/plugin contexts; after
+  PR7, only origins explicitly listed in `CORS_ALLOWED_ORIGINS` ever
+  receive `Access-Control-Allow-Origin`, so the browser refuses to let
+  `evil.example.com`'s JS read the response body (exploits/tests T12,
+  mitigated; see `tests/test_security_middleware.py`).
 
 ## 10. Mitigations
 
@@ -304,10 +319,15 @@ middleware is wired into the app yet** — that remains planned, not built (see
   sliding-window per-IP and per-account tiers on `/api/v1/auth/*`, generic
   `429` responses with standard rate-limit headers, denials audited (T2,
   partial T11) — shipped in Phase 1.5 PR 6. Redis backend deferred (§13).
+- CORS/TrustedHost enforcement — `CORSMiddleware`/`TrustedHostMiddleware`
+  (`app/middleware/security.py`) wired at runtime, consuming PR1's
+  already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` with no new
+  settings or duplicate validation logic; explicit `allow_methods`/
+  `allow_headers` (not `"*"`); `www_redirect` disabled (T12) — shipped in
+  Phase 1.5 PR 7.
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- CORS/TrustedHost middleware wiring using the settings PR1 already validates (T12).
 - DevSecOps CI additions — secret scanning, dependency scanning, SAST,
   container-image scanning (T3, T15).
 - PII redaction before any future external AI-provider call (T8, T10).
@@ -353,8 +373,15 @@ exists in the codebase yet:**
 - **T11 remains partially open**: only `/api/v1/auth/*` is rate-limited
   (PR6); every other `/api/v1/*` route still has no rate limiting, no
   general body-size cap, and no concurrency/timeout controls.
-- **T12 remains open** until CORS/TrustedHost middleware is actually wired
-  (config is validated but not yet enforced at runtime).
+- **T12 residuals (PR7):** enforcement is now live, but scope is
+  deliberately narrow -- CSP headers, HSTS, `X-Frame-Options`,
+  `X-Content-Type-Options`, and CSRF protection are all explicitly out of
+  scope for this PR (see PR7 design notes) and remain unaddressed by any
+  Phase 1.5 PR to date. Host/origin allowlists are static, in-process
+  config (no dynamic/multi-tenant origin support). TrustedHost's built-in
+  `400` and CORS preflight's built-in `400` are Starlette's default
+  plain-text responses, deliberately left unwrapped in this app's
+  `AppError` JSON envelope (see `app/middleware/security.py`).
 - Access tokens have no revocation store: a stolen access token remains valid
   until its short expiry elapses (mitigated by the 15-minute default lifetime,
   not eliminated).
@@ -390,26 +417,27 @@ exists in the codebase yet:**
 - Development/test environments are never exposed to the public internet and
   are intentionally exempt from production-grade secret/CORS/TLS enforcement
   (`Environment.development`/`test` in `app/core/config.py`).
-- **Authentication (PR 3), authorization (PR 4), audit logging (PR 5), and
-  authentication-endpoint rate limiting (PR 6) are all now implemented.**
-  This system still should not be exposed to real, non-test student data in
-  a publicly reachable, horizontally-scaled deployment until the Redis
-  rate-limiting backend lands (T2 residual) and general `/api/v1/*` rate
-  limiting exists (T11 residual) — see §11 residual risks and §13.
+- **Authentication (PR 3), authorization (PR 4), audit logging (PR 5),
+  authentication-endpoint rate limiting (PR 6), and CORS/TrustedHost
+  enforcement (PR 7) are all now implemented.** This system still should
+  not be exposed to real, non-test student data in a publicly reachable,
+  horizontally-scaled deployment until the Redis rate-limiting backend
+  lands (T2 residual) and general `/api/v1/*` rate limiting exists (T11
+  residual) — see §11 residual risks and §13.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
 Identity schema (PR 2B), authentication (PR 3), authorization/tenant
-isolation (PR 4), audit logging (PR 5), and authentication-endpoint rate
-limiting (PR 6) are implemented; everything below is still approved
-architecture that will be addressed in its own future PR per the approved
-Phase 1.5 roadmap.
+isolation (PR 4), audit logging (PR 5), authentication-endpoint rate
+limiting (PR 6), and CORS/TrustedHost enforcement (PR 7) are implemented;
+everything below is still approved architecture that will be addressed in
+its own future PR per the approved Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
 | Redis-backed `RateLimiter` (horizontal scaling) | Closes T2's per-process residual |
 | General `/api/v1/*` rate limiting and abuse protection | Remaining T11 |
-| CORS/TrustedHost middleware wiring | T12 |
+| Additional browser-security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
 | DevSecOps CI checks (secret/dependency/SAST/container scanning) | T3, T15 |
 | Observability (structured logging + redaction filter) | Reduces residual T14 |
 | Future AI-provider integration phase | Must close T8 before any real LLM call ships |
