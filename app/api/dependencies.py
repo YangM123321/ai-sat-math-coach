@@ -115,3 +115,69 @@ def require_admin(
     in a router's `dependencies=[...]` list."""
     authz.ensure_admin(user)
     return user
+
+from app.core.exceptions import RateLimited
+from app.middleware.request_context import get_request_context
+from app.services.auth_service import normalize_email
+from app.services.rate_limiter_service import RateLimitResult, get_rate_limiter
+
+
+def _client_rate_limit_key() -> str:
+    return get_request_context()["ip_address"] or "unknown"
+
+
+def _raise_if_denied(result: RateLimitResult, audit: AuditService, event_name: str, reason_code: str) -> None:
+    if result.allowed:
+        return
+    audit.record(event_name, category="authentication", outcome="denied", reason_code=reason_code)
+    raise RateLimited(
+        retry_after_seconds=result.reset_seconds,
+        limit=result.limit,
+        remaining=result.remaining,
+        reset_seconds=result.reset_seconds,
+    )
+
+
+def rate_limit_auth_ip(audit: AuditService = Depends(get_audit_service)) -> None:
+    """Coarse per-IP backpressure shared by register/refresh/logout/
+    logout-all (T11). Login uses its own, tighter tiers -- see
+    rate_limit_login_ip and check_login_account_rate_limit below."""
+    settings = get_settings()
+    if not settings.rate_limit_enabled:
+        return
+    result = get_rate_limiter().check(
+        f"auth_ip:{_client_rate_limit_key()}",
+        max_attempts=settings.rate_limit_auth_ip_max_attempts,
+        window_seconds=settings.rate_limit_auth_ip_window_seconds,
+    )
+    _raise_if_denied(result, audit, "auth.rate_limited", "RATE_LIMIT_IP")
+
+
+def rate_limit_login_ip(audit: AuditService = Depends(get_audit_service)) -> None:
+    settings = get_settings()
+    if not settings.rate_limit_enabled:
+        return
+    result = get_rate_limiter().check(
+        f"login_ip:{_client_rate_limit_key()}",
+        max_attempts=settings.rate_limit_login_ip_max_attempts,
+        window_seconds=settings.rate_limit_login_ip_window_seconds,
+    )
+    _raise_if_denied(result, audit, "auth.login.rate_limited", "RATE_LIMIT_IP")
+
+
+def check_login_account_rate_limit(email: str, audit: AuditService) -> None:
+    """Called explicitly from the login route body (not a declarative
+    Depends) because it needs the already-parsed request body's email --
+    see architecture-review decision, Phase 1.5 PR 6. Keyed on the
+    normalized email (app.services.auth_service.normalize_email), so an
+    attacker can't dodge the per-account tier with case/whitespace
+    variants of the same address."""
+    settings = get_settings()
+    if not settings.rate_limit_enabled:
+        return
+    result = get_rate_limiter().check(
+        f"login_account:{normalize_email(email)}",
+        max_attempts=settings.rate_limit_login_account_max_attempts,
+        window_seconds=settings.rate_limit_login_account_window_seconds,
+    )
+    _raise_if_denied(result, audit, "auth.login.rate_limited", "RATE_LIMIT_ACCOUNT")

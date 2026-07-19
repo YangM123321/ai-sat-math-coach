@@ -1,6 +1,14 @@
 from fastapi import APIRouter, Depends, Response, status
 
-from app.api.dependencies import get_audit_service, get_auth_service, get_bearer_refresh_token, get_current_user
+from app.api.dependencies import (
+    check_login_account_rate_limit,
+    get_audit_service,
+    get_auth_service,
+    get_bearer_refresh_token,
+    get_current_user,
+    rate_limit_auth_ip,
+    rate_limit_login_ip,
+)
 from app.core.config import get_settings
 from app.core.exceptions import EmailAlreadyRegistered, InvalidCredentials, InvalidRefreshToken
 from app.models.user import User
@@ -55,7 +63,7 @@ def translate(exc: Exception):
     "/register",
     response_model=UserResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(rate_limit_auth_ip), Depends(require_api_key)],
 )
 def register(request: RegisterRequest, service: AuthService = Depends(get_auth_service), audit: AuditService = Depends(get_audit_service)):
     try:
@@ -68,8 +76,9 @@ def register(request: RegisterRequest, service: AuthService = Depends(get_auth_s
     return result
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, dependencies=[Depends(rate_limit_login_ip)])
 def login(request: LoginRequest, service: AuthService = Depends(get_auth_service), audit: AuditService = Depends(get_audit_service)):
+    check_login_account_rate_limit(request.email, audit)
     try:
         result = service.login(request.email, request.password)
     except Exception as exc:
@@ -80,7 +89,7 @@ def login(request: LoginRequest, service: AuthService = Depends(get_auth_service
     return result
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post("/refresh", response_model=TokenResponse, dependencies=[Depends(rate_limit_auth_ip)])
 def refresh(request: RefreshRequest, service: AuthService = Depends(get_auth_service), audit: AuditService = Depends(get_audit_service)):
     try:
         result = service.refresh(request.refresh_token)
@@ -95,14 +104,14 @@ def refresh(request: RefreshRequest, service: AuthService = Depends(get_auth_ser
     return result
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(rate_limit_auth_ip)])
 def logout(refresh_token: str = Depends(get_bearer_refresh_token), service: AuthService = Depends(get_auth_service), audit: AuditService = Depends(get_audit_service)):
     service.logout(refresh_token)
     audit.record("auth.logout", category="authentication", outcome="success")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/logout-all", response_model=LogoutAllResponse)
+@router.post("/logout-all", response_model=LogoutAllResponse, dependencies=[Depends(rate_limit_auth_ip)])
 def logout_all(current_user: User = Depends(get_current_user), service: AuthService = Depends(get_auth_service), audit: AuditService = Depends(get_audit_service)):
     revoked_count = service.logout_all(current_user.id)
     audit.record("auth.logout_all", category="authentication", outcome="success", actor_user_id=current_user.id, metadata={"revoked_count": revoked_count})

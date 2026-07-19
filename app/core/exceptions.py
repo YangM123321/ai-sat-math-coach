@@ -8,6 +8,7 @@ class AppError(Exception):
     code:str
     message:str
     details:dict|None=None
+    headers:dict|None=None
 
 class NotFound(AppError):
     def __init__(self, diagnostic_id:str):
@@ -26,7 +27,7 @@ class InvalidModelOutput(AppError):
         super().__init__(502,'INVALID_MODEL_OUTPUT','The provider returned invalid structured output.',{'reason':reason})
 
 async def app_error_handler(_:Request, exc:AppError):
-    return JSONResponse(status_code=exc.status_code, content={'error':{'code':exc.code,'message':exc.message,'details':exc.details}})
+    return JSONResponse(status_code=exc.status_code, content={'error':{'code':exc.code,'message':exc.message,'details':exc.details}}, headers=exc.headers)
 
 class EvaluationNotFound(AppError):
     def __init__(self, run_id:str):
@@ -65,3 +66,18 @@ class Forbidden(AppError):
 class UserNotFound(AppError):
     def __init__(self, user_id:str):
         super().__init__(404,'USER_NOT_FOUND','The referenced user does not exist.',{'user_id':user_id})
+
+class RateLimited(AppError):
+    # Phase 1.5 PR 6: deliberately generic message -- no detail about
+    # which tier (per-IP vs. per-account) tripped, matching the
+    # no-enumeration-signal philosophy already used by InvalidCredentials
+    # and Forbidden. reset_seconds/Retry-After use seconds-until-reset
+    # (not a Unix timestamp), consistent units across both headers.
+    def __init__(self, *, retry_after_seconds:int, limit:int, remaining:int, reset_seconds:int):
+        headers={
+            'Retry-After':str(retry_after_seconds),
+            'X-RateLimit-Limit':str(limit),
+            'X-RateLimit-Remaining':str(remaining),
+            'X-RateLimit-Reset':str(reset_seconds),
+        }
+        super().__init__(429,'RATE_LIMITED','Too many requests. Please try again later.',None,headers)
