@@ -164,7 +164,14 @@ jobs:
         run: bandit -r app -f json -o bandit-report.json --exit-zero
 
       - name: Upload Bandit report
-        uses: actions/upload-artifact@v4
+        # v7, not v4: v4 targets the Node 20 runtime GitHub is deprecating.
+        # v5-v7 make no breaking change to the `name`/`path` inputs used
+        # here (confirmed against each release's changelog); v6 is the
+        # first version that actually defaults to the Node 24 runtime (v5
+        # only added preliminary support without switching the default).
+        # upload-artifact isn't used by any other job in this file, so this
+        # upgrade doesn't create version inconsistency elsewhere.
+        uses: actions/upload-artifact@v7
         with:
           name: bandit-report
           path: bandit-report.json
