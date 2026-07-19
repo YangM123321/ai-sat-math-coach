@@ -12,14 +12,15 @@ investigation notes for that distinction).
 does **not** exist in the codebase today. Password-hashing (Argon2id),
 JWT/refresh-token authentication (PR 3), route-level authorization/tenant
 isolation (PR 4), security audit logging (PR 5), rate limiting on
-authentication endpoints (PR 6), CORS/TrustedHost enforcement (PR 7), and CI
-dependency-vulnerability scanning (PR 10), by contrast, **are implemented** —
-see §3 and §8 (T1, T2, T4-T7, T12, T15, T16) for what that does and does not
-cover. Items marked "current" or described as "already in place" (§10) are
-live in `main` right now: the shared API key, PR1's configuration validation,
-PR 3's authentication endpoints, PR 4's centralized `AuthorizationService`,
-PR 5's `AuditService`, PR 6's `RateLimiter`, PR 7's CORS/TrustedHost
-middleware, and PR 10's `pip-audit` CI job.**
+authentication endpoints (PR 6), CORS/TrustedHost enforcement (PR 7), CI
+dependency-vulnerability scanning (PR 10), and CI secret scanning (PR 11), by
+contrast, **are implemented** — see §3 and §8 (T1, T2, T3, T4-T7, T12, T15,
+T16) for what that does and does not cover. Items marked "current" or
+described as "already in place" (§10) are live in `main` right now: the
+shared API key, PR1's configuration validation, PR 3's authentication
+endpoints, PR 4's centralized `AuthorizationService`, PR 5's `AuditService`,
+PR 6's `RateLimiter`, PR 7's CORS/TrustedHost middleware, PR 10's `pip-audit`
+CI job, and PR 11's Gitleaks CI job.**
 
 ## 2. Security philosophy
 
@@ -112,6 +113,16 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   Runs independently of the `test`/`migrations` jobs, with minimal
   read-only (`contents: read`) permissions. See §8 (T15) for what this
   covers and does not.
+- **CI secret scanning** (`.github/workflows/ci.yml`'s `secret-scan` job,
+  **already implemented**, Phase 1.5 PR 11) — the official
+  `gitleaks/gitleaks-action@v3` scans the Git content available to it
+  (full history via `actions/checkout@v6`'s `fetch-depth: 0`) on every
+  push/PR, failing the build when a pattern resembling a committed secret
+  is detected. One reviewed historical false-positive fingerprint is
+  baselined via `.gitleaksignore` (no broader allowlist); every other
+  finding fails CI. Independent of every other job, read-only
+  (`contents: read`) permissions, no PR commenting or artifact upload. See
+  §8 (T3) for what this covers and does not.
 
 `/health` and `/ready` are intentionally public. Image upload
 (`POST /api/v1/diagnostics/from-image`) fails closed (`NoOpOCRProvider`, HTTP 501)
@@ -211,7 +222,7 @@ see §8 (T12) for the enforced behavior.
 |---|---|---|---|---|
 | T1 | Account takeover | Critical | **Mitigated (implemented in PR3, strengthened in PR6)** | Argon2id password hashing (`app/security/password_hashing.py`); login rejects a disabled account and returns an identical generic error for wrong-password/no-such-account/disabled (no enumeration signal); `logout-all` supports revoking every session; login is now also rate-limited per-IP and per-account (T2, PR6). Residual: no email-based re-verification/notification on password change (no password-change endpoint exists at all yet). |
 | T2 | Credential stuffing / brute force | High | **Mitigated (implemented in PR6)** | `/api/v1/auth/login` is throttled by a sliding-window `RateLimiter` on two independent tiers — per-IP (`RATE_LIMIT_LOGIN_IP_*`, default 10/5min) and per-account/normalized-email (`RATE_LIMIT_LOGIN_ACCOUNT_*`, default 5/5min) — so a botnet spreading attempts across many IPs at one victim account is still caught by the account tier. Register/refresh/logout/logout-all share a coarser per-IP tier (`RATE_LIMIT_AUTH_IP_*`). A tripped limit returns a generic `429 RATE_LIMITED` (no detail on which tier tripped, matching `InvalidCredentials`'s non-enumeration philosophy) with `Retry-After`/`X-RateLimit-*` headers, and is itself audited (`auth.login.rate_limited`/`auth.rate_limited`). Off by default in dev/test (mirrors `require_api_key`'s precedent); production startup refuses to boot without `RATE_LIMIT_ENABLED=true` (`app/core/config.py`). Residual: in-memory backend is per-process only — see T2 in §11. |
-| T3 | Weak or leaked secrets | Critical | **Partially mitigated (implemented in PR1)** | PR1 refuses production startup on missing/short/placeholder `SECRET_KEY`/`API_KEY` and non-TLS `DATABASE_URL`. `SECRET_KEY` now also signs JWTs (PR3), raising its blast radius if leaked. Residual: secrets still live in plain env vars/`.env`, no secrets-manager integration, no CI secret scanning yet. |
+| T3 | Weak or leaked secrets | Critical | **Partially mitigated (implemented in PR1 and PR11)** | PR1 refuses production startup on missing/short/placeholder `SECRET_KEY`/`API_KEY` and non-TLS `DATABASE_URL`. `SECRET_KEY` now also signs JWTs (PR3), raising its blast radius if leaked. PR11 adds a `secret-scan` CI job (`.github/workflows/ci.yml`) using the official `gitleaks/gitleaks-action@v3` against the Git content available to it (full history, via `actions/checkout@v6`'s `fetch-depth: 0`) on every push/pull request, failing the build on any pattern resembling a committed secret. No broad allowlists or exclusions exist; one exact, reviewed historical false-positive fingerprint (a non-secret documentation placeholder, see `.gitleaksignore`) is baselined, and every other finding still fails CI -- no `continue-on-error`. This is a **detection** control for patterns resembling secrets, not secret storage or credential management, and it does **not** guarantee the repository (or its history) contains no secrets. Residual: secrets still live in plain env vars/`.env` at runtime, no secrets-manager integration, no pre-commit protection, and Gitleaks can only act on Git content actually made available to it in CI -- see T3 in §11 for the full list of what remains uncovered. |
 | T4 | Token theft and replay | High | **Mitigated (implemented in PR3, strengthened in PR7)** | Access tokens are short-lived (15 min default) JWTs, HS256-signed, with `iss`/`aud`/`exp`/`type` validated on every use and the signing algorithm always pinned (never taken from the token) -- closes the "alg:none"/algorithm-confusion class of bugs. Never logged. CORS enforcement (T12, PR7) now restricts which browser origins can read a response carrying a token at all. Residual: no access-token revocation store (a stolen token remains valid for its full, short lifetime). |
 | T5 | Refresh-token abuse | High | **Mitigated (implemented in PR3)** | Refresh tokens are opaque high-entropy random values; only a SHA-256 hash is persisted (`refresh_tokens.token_hash`), never the raw value. Rotated on every use; the token just used is revoked (`revoked_at`, `replaced_by_id`). Replaying an already-*rotated* token (not merely a logged-out one) revokes every active session for that user. |
 | T6 | Privilege escalation (vertical) | Critical | **Mitigated (implemented in PR4)** | Admin status is derived exclusively from the authenticated `User.role` loaded fresh from the database (`AuthorizationService._is_admin`) — there is no caller-supplied `role` field anywhere in the request surface for any domain route; `role` cannot be smuggled into registration either (`RegisterRequest` has no such field, `extra="forbid"`). The specific bug (self-asserted `role=admin` query param bypassing the dashboard grant check) is gone along with the query params themselves. |
@@ -301,6 +312,20 @@ see §8 (T12) for the enforced behavior.
   fails the build the moment that CVE is published and indexed
   (exploits/tests T15, partially mitigated -- detection only, no
   automatic remediation, and only for already-disclosed vulnerabilities).
+- **K (partially closed in PR 11):** A developer accidentally commits a
+  real credential (a live API key, a database connection string with a
+  password, a signing key) to a feature branch and opens a pull request.
+  Before PR11, nothing in CI would ever notice; the credential would merge
+  to `main` and remain in Git history indefinitely, discoverable by
+  anyone with read access to the repository. After PR11, the `secret-scan`
+  job runs `gitleaks/gitleaks-action@v3` against that PR's Git content and
+  fails the build the moment a matching pattern is detected, before merge
+  (exploits/tests T3, partially mitigated -- pattern-based detection only;
+  a secret that doesn't match any configured rule, or one introduced
+  through a path Gitleaks doesn't scan, would not be caught; a real
+  credential exposed this way still requires revocation/rotation and
+  possibly Git-history remediation, which this control does not perform
+  automatically).
 
 ## 10. Mitigations
 
@@ -352,12 +377,25 @@ see §8 (T12) for the enforced behavior.
   known, publicly disclosed vulnerabilities only; does not guarantee
   complete supply-chain security (see T15 in §8 for what remains
   uncovered).
+- CI secret scanning — a dedicated, independent `secret-scan` job in
+  `.github/workflows/ci.yml` runs the official `gitleaks/gitleaks-action@v3`
+  against the Git content available to it (full history via
+  `actions/checkout@v6`'s `fetch-depth: 0`), failing the build on any
+  pattern resembling a committed secret, with no `continue-on-error`
+  (T3, partial) — shipped in Phase 1.5 PR 11. No broad allowlists or
+  exclusions exist; one exact, reviewed historical false-positive
+  fingerprint is baselined via `.gitleaksignore` (a non-secret
+  documentation placeholder), and every other finding still fails CI.
+  Detects patterns resembling secrets only; does not guarantee the
+  repository or its history contains no secrets, does not perform
+  credential revocation/rotation, and does not rewrite Git history (see
+  T3 in §8 and §11 for what remains uncovered).
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- DevSecOps CI additions — secret scanning, SAST, container-image scanning
-  (T3, T15 remainder; dependency-vulnerability scanning itself is now
-  implemented, PR 10).
+- DevSecOps CI additions — SAST, container-image scanning (remaining T15;
+  dependency-vulnerability scanning and secret scanning are now
+  implemented, PR 10 and PR 11 respectively).
 - PII redaction before any future external AI-provider call (T8, T10).
 
 ## 11. Residual risks
@@ -382,6 +420,27 @@ exists in the codebase yet:**
     assigned teacher can no longer trigger a snapshot for their own student —
     a usability tradeoff of the "teachers are read-only" policy choice, not a
     security gap.
+- **T3 residuals (PR11):** `gitleaks/gitleaks-action@v2` only detects
+  patterns it has rules for -- it cannot catch encoded, split, encrypted,
+  or otherwise obfuscated secrets, and any real secret is subject to false
+  negatives (missed) as well as false positives (flagged text that isn't
+  actually a credential). It can only scan Git content actually made
+  available to the CI job by the checkout/event configuration; secrets
+  exposed outside Git entirely (chat logs, tickets, screenshots, a
+  developer's local `.env`) are invisible to it, as is any history the
+  configured checkout doesn't provide. A passing scan is not proof the
+  repository (or its history) contains no secrets. Detecting a secret
+  does not revoke or rotate it, and removing a secret from the latest
+  commit does not remove it from Git history -- a real exposed credential
+  still requires manual revocation/rotation, and a secret already
+  committed still requires separate, explicit history remediation (not
+  performed by this PR and not something this PR authorizes). This PR
+  also does not cover compromised CI infrastructure itself (a compromised
+  runner or a compromised `gitleaks-action` release could evade or disable
+  detection), has no pre-commit/local protection (detection only happens
+  in CI, after a push), and has no runtime secret-manager integration --
+  secrets still live in plain environment variables at runtime, unchanged
+  from T3's PR1 baseline.
 - **T2 residuals (PR6):** `MemoryRateLimiter` is **per-process** — state is
   not shared across multiple app instances/workers. Not a real gap today
   (`docker-compose.yml` runs a single `api` service), but a horizontally
@@ -456,30 +515,33 @@ exists in the codebase yet:**
   (`Environment.development`/`test` in `app/core/config.py`).
 - **Authentication (PR 3), authorization (PR 4), audit logging (PR 5),
   authentication-endpoint rate limiting (PR 6), CORS/TrustedHost
-  enforcement (PR 7), and CI dependency-vulnerability scanning (PR 10) are
-  all now implemented.** This system still should not be exposed to real,
-  non-test student data in a publicly reachable, horizontally-scaled
-  deployment until the Redis rate-limiting backend lands (T2 residual) and
-  general `/api/v1/*` rate limiting exists (T11 residual) — see §11
-  residual risks and §13. `pip-audit` (PR 10) detects known, published
-  dependency vulnerabilities only; it is not a substitute for secret
-  scanning, SAST, container-image scanning, or manual dependency review.
+  enforcement (PR 7), CI dependency-vulnerability scanning (PR 10), and CI
+  secret scanning (PR 11) are all now implemented.** This system still
+  should not be exposed to real, non-test student data in a publicly
+  reachable, horizontally-scaled deployment until the Redis rate-limiting
+  backend lands (T2 residual) and general `/api/v1/*` rate limiting exists
+  (T11 residual) — see §11 residual risks and §13. `pip-audit` (PR 10)
+  detects known, published dependency vulnerabilities only; `gitleaks`
+  (PR 11) detects patterns resembling committed secrets only. Neither is a
+  substitute for SAST, container-image scanning, a runtime secrets
+  manager, credential rotation, or manual review.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
 Identity schema (PR 2B), authentication (PR 3), authorization/tenant
 isolation (PR 4), audit logging (PR 5), authentication-endpoint rate
-limiting (PR 6), CORS/TrustedHost enforcement (PR 7), and CI
-dependency-vulnerability scanning (PR 10) are implemented; everything below
-is still approved architecture that will be addressed in its own future PR
-per the approved Phase 1.5 roadmap.
+limiting (PR 6), CORS/TrustedHost enforcement (PR 7), CI
+dependency-vulnerability scanning (PR 10), and CI secret scanning (PR 11)
+are implemented; everything below is still approved architecture that will
+be addressed in its own future PR per the approved Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
 | Redis-backed `RateLimiter` (horizontal scaling) | Closes T2's per-process residual |
 | General `/api/v1/*` rate limiting and abuse protection | Remaining T11 |
 | Additional browser-security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
-| DevSecOps CI checks (secret scanning, SAST, container-image scanning) | T3, remaining T15 |
+| DevSecOps CI checks (SAST, container-image scanning) | Remaining T15 (dependency and secret scanning are now implemented, PR 10 and PR 11) |
+| Runtime secrets-manager integration, credential rotation, pre-commit secret protection | Remaining T3 residuals |
 | Observability (structured logging + redaction filter) | Reduces residual T14 |
 | Future AI-provider integration phase | Must close T8 before any real LLM call ships |
 | Future privacy/data-lifecycle work | Further reduces T10 once real student PII is collected |
