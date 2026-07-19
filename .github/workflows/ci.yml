@@ -126,3 +126,49 @@ jobs:
           # design, not by accident.
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+  sast:
+    runs-on: ubuntu-latest
+    # Independent of test/migrations/security/secret-scan (no `needs:`) --
+    # same rationale as the other security jobs: a SAST finding isn't
+    # causally related to other jobs' outcomes, so gating it behind them
+    # would only delay the signal. Read-only: this job only checks out the
+    # repo and scans it locally with Bandit; it never needs to write
+    # anything except the report artifact below.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Bandit
+        run: python -m pip install bandit==1.9.4
+
+      - name: Generate full Bandit report (all severities/confidences -- visibility only)
+        # continue-on-error is scoped to this reporting step only. Bandit
+        # exits non-zero whenever any finding exists at any severity, and
+        # this step exists purely to produce a complete artifact for human
+        # review -- it does not gate the build. The actual gate is the
+        # separate, unmodified "Enforce Bandit gate" step below, whose exit
+        # code is never rewritten.
+        continue-on-error: true
+        run: bandit -r app -f json -o bandit-report.json
+
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      - name: Enforce Bandit gate (medium+ severity, medium+ confidence)
+        # Scans only app/ -- the production application source -- not
+        # tests/, scripts/, or alembic/. Medium+ severity and medium+
+        # confidence (-ll -ii): the baseline false-positive source at this
+        # repo's size (B105, keyword-based hardcoded-password matches on
+        # non-secret constants) reports at Low severity, so this threshold
+        # filters exactly that noise without silencing anything at or above
+        # Medium. Natural exit code only -- no continue-on-error, no
+        # `|| true`, no exit-code rewriting.
+        run: bandit -r app -ll -ii

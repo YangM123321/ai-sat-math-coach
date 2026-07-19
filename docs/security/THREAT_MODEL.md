@@ -13,14 +13,15 @@ does **not** exist in the codebase today. Password-hashing (Argon2id),
 JWT/refresh-token authentication (PR 3), route-level authorization/tenant
 isolation (PR 4), security audit logging (PR 5), rate limiting on
 authentication endpoints (PR 6), CORS/TrustedHost enforcement (PR 7), CI
-dependency-vulnerability scanning (PR 10), and CI secret scanning (PR 11), by
-contrast, **are implemented** — see §3 and §8 (T1, T2, T3, T4-T7, T12, T15,
-T16) for what that does and does not cover. Items marked "current" or
-described as "already in place" (§10) are live in `main` right now: the
-shared API key, PR1's configuration validation, PR 3's authentication
-endpoints, PR 4's centralized `AuthorizationService`, PR 5's `AuditService`,
-PR 6's `RateLimiter`, PR 7's CORS/TrustedHost middleware, PR 10's `pip-audit`
-CI job, and PR 11's Gitleaks CI job.**
+dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), and CI
+static application security testing (PR 12), by contrast, **are implemented**
+— see §3 and §8 (T1, T2, T3, T4-T7, T12, T15, T16) for what that does and does
+not cover. Items marked "current" or described as "already in place" (§10)
+are live in `main` right now: the shared API key, PR1's configuration
+validation, PR 3's authentication endpoints, PR 4's centralized
+`AuthorizationService`, PR 5's `AuditService`, PR 6's `RateLimiter`, PR 7's
+CORS/TrustedHost middleware, PR 10's `pip-audit` CI job, PR 11's Gitleaks CI
+job, and PR 12's Bandit CI job.**
 
 ## 2. Security philosophy
 
@@ -123,6 +124,21 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   finding fails CI. Independent of every other job, read-only
   (`contents: read`) permissions, no PR commenting or artifact upload. See
   §8 (T3) for what this covers and does not.
+- **CI static application security testing** (`.github/workflows/ci.yml`'s
+  `sast` job, **already implemented**, Phase 1.5 PR 12) — `bandit==1.9.4`
+  scans `app/` (the production application source only, not `tests/`,
+  `scripts/`, or `alembic/`) on every push/PR. A full, unfiltered JSON
+  report is generated and uploaded as a build artifact for visibility, then
+  a separate gating scan (`bandit -r app -ll -ii`, medium+ severity and
+  medium+ confidence) fails the build on any qualifying finding with no
+  suppression or exit-code override. Independent of every other job,
+  read-only (`contents: read`) permissions. Bandit is pattern-based static
+  analysis: it detects known, syntactically-matchable weaknesses (hardcoded
+  credentials, weak cryptography, unsafe `eval`/`exec`/deserialization,
+  insecure temporary files, etc.) in the code it scans; it does not prove
+  the application is secure, does not perform cross-file/business-logic
+  analysis, and produces both false positives and false negatives by
+  design. See §8 (T15) for what this covers and does not.
 
 `/health` and `/ready` are intentionally public. Image upload
 (`POST /api/v1/diagnostics/from-image`) fails closed (`NoOpOCRProvider`, HTTP 501)
@@ -234,7 +250,7 @@ see §8 (T12) for the enforced behavior.
 | T12 | Insecure CORS / trusted-host configuration | Medium | **Mitigated (implemented in PR7)** | `CORSMiddleware`/`TrustedHostMiddleware` (Starlette built-ins) are now wired in `app/main.py` via `app/middleware/security.py`, consuming PR1's already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` directly -- no new settings, no duplicate validation. A mismatched `Host` header gets Starlette's built-in `400 Invalid host header` (left unmodified -- see design notes in `app/middleware/security.py`); a disallowed CORS origin never receives `Access-Control-Allow-Origin` (browsers block the read; the server itself still processes and returns the response for a non-preflight request -- CORS is a browser-side control, not a server-side reject). `allow_methods`/`allow_headers` are explicit lists (`GET`/`POST`/`PATCH` and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID`), not `"*"` -- this API's surface is small and fully known, so there was no compatibility reason to fall back to a wildcard. Empty-list semantics differ deliberately by design: empty `TRUSTED_HOSTS` means allow **all** hosts (matches Starlette's own `None`-defaults-to-`["*"]` behavior), while empty `CORS_ALLOWED_ORIGINS` means allow **no** browser origins (an empty allowlist, not a wildcard) -- both are dev/test-only states, since production requires both non-empty (PR1, unchanged by this PR). `www_redirect` is disabled (an API should never 301 a non-GET request). |
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
 | T14 | Logging of secrets or personal data | Medium | **Low, fragile** | `RequestContextMiddleware` logs method/path/status/duration/request_id only — no bodies, headers, or field values. Risk is forward-looking: once JWTs/passwords/PII exist, no redaction filter exists yet to catch a careless future log statement. |
-| T15 | Dependency and supply-chain risk | Medium | **Partially mitigated (implemented in PR10)** | `.github/workflows/ci.yml`'s `security` job runs `pip-audit` against the fully resolved, installed dependency environment (not `requirements.txt` directly) on every push/pull request, failing the build if any known published vulnerability is found -- no ignore list, no suppression, no `continue-on-error`. This detects known, publicly disclosed vulnerabilities in the exact dependency versions actually installed; it does **not** guarantee complete software supply-chain security. It does not cover: malicious or typosquatted packages, package provenance/integrity, the Docker base image or OS-level packages, or vulnerabilities that haven't been publicly disclosed yet. `requirements.txt` still uses range pins, not hash pins, and there is still no secret scanning, SAST, or container-image scanning in CI. |
+| T15 | Dependency and supply-chain risk | Medium | **Partially mitigated (implemented in PR10)** | `.github/workflows/ci.yml`'s `security` job runs `pip-audit` against the fully resolved, installed dependency environment (not `requirements.txt` directly) on every push/pull request, failing the build if any known published vulnerability is found -- no ignore list, no suppression, no `continue-on-error`. This detects known, publicly disclosed vulnerabilities in the exact dependency versions actually installed; it does **not** guarantee complete software supply-chain security. It does not cover: malicious or typosquatted packages, package provenance/integrity, the Docker base image or OS-level packages, or vulnerabilities that haven't been publicly disclosed yet. `requirements.txt` still uses range pins, not hash pins. CI secret scanning (PR 11) and CI static application security testing (PR 12, `bandit`) are now implemented (see §3), but neither substitutes for dependency/supply-chain coverage; there is still no container-image scanning in CI. |
 | T16 | Insufficient audit trail for security-relevant events | Medium | **Mitigated (implemented in PR5)** | `AuditService` (`app/services/audit_service.py`) writes a stable-named, append-only row to `audit_events` for every registration/login/refresh/logout(-all) outcome, every `AuthorizationService` denial, refresh-token reuse detection, and dashboard access-grant creation. No password, password hash, raw JWT, or raw refresh token is ever a parameter `record()` accepts, so none can reach the table even by accident; raw email addresses are also deliberately not stored (actor/target are opaque `users.id` values only). Writes are fail-open (see §2) and there is no query API or automated retention/purge in this PR — see §11. |
 
 ## 9. Abuse cases
@@ -326,6 +342,18 @@ see §8 (T12) for the enforced behavior.
   credential exposed this way still requires revocation/rotation and
   possibly Git-history remediation, which this control does not perform
   automatically).
+- **L (partially closed in PR 12):** A future code change re-introduces a
+  pattern-matchable weakness into `app/` -- e.g. a hardcoded credential, a
+  call to `eval`/`exec`, unsafe deserialization, or a weak hash used where
+  a strong one is required -- and opens a pull request. Before PR12,
+  nothing in CI would check application source code for these patterns at
+  all; the change could merge unnoticed. After PR12, the `sast` job runs
+  `bandit==1.9.4` against `app/` and fails the build the moment a matching
+  pattern is detected, before merge (partially mitigated -- pattern-based
+  detection only, scoped to `app/`; it does not detect authorization/
+  business-logic bugs, anything requiring cross-file dataflow analysis, or
+  any weakness that doesn't match one of Bandit's known rule signatures,
+  and a passing scan is not proof the change is secure).
 
 ## 10. Mitigations
 
@@ -390,12 +418,32 @@ see §8 (T12) for the enforced behavior.
   repository or its history contains no secrets, does not perform
   credential revocation/rotation, and does not rewrite Git history (see
   T3 in §8 and §11 for what remains uncovered).
+- CI static application security testing — a dedicated, independent `sast`
+  job in `.github/workflows/ci.yml` runs `bandit==1.9.4` against `app/`
+  (the production application source only, not `tests/`, `scripts/`, or
+  `alembic/`) on every push/PR. A full, unfiltered JSON report is uploaded
+  as a build artifact for visibility; a separate gate
+  (`bandit -r app -ll -ii`, medium+ severity and medium+ confidence) fails
+  the build on any qualifying finding, with no suppression and no
+  exit-code override (T15, partial) — shipped in Phase 1.5 PR 12. Bandit is
+  pattern-based static analysis: it detects known, syntactically-matchable
+  weaknesses (hardcoded credentials, weak cryptography, unsafe
+  `eval`/`exec`/deserialization, insecure temporary files, and similar) in
+  the code it scans. It does **not** prove the application is secure, does
+  not perform cross-file or business-logic analysis (it cannot verify, for
+  example, that every route calls `AuthorizationService` correctly — that
+  guarantee comes from this project's own authorization tests, not from
+  SAST), does not replace dependency scanning, secret scanning, or runtime
+  /dynamic testing, and does not substitute for human architecture review.
+  Both false positives and false negatives are expected, normal
+  characteristics of pattern-based analysis, not signs of tool
+  malfunction — see T15 in §8 and §11 for what remains uncovered.
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- DevSecOps CI additions — SAST, container-image scanning (remaining T15;
-  dependency-vulnerability scanning and secret scanning are now
-  implemented, PR 10 and PR 11 respectively).
+- DevSecOps CI additions — container-image scanning (remaining T15;
+  dependency-vulnerability scanning, secret scanning, and SAST are now
+  implemented, PR 10, PR 11, and PR 12 respectively).
 - PII redaction before any future external AI-provider call (T8, T10).
 
 ## 11. Residual risks
@@ -515,32 +563,36 @@ exists in the codebase yet:**
   (`Environment.development`/`test` in `app/core/config.py`).
 - **Authentication (PR 3), authorization (PR 4), audit logging (PR 5),
   authentication-endpoint rate limiting (PR 6), CORS/TrustedHost
-  enforcement (PR 7), CI dependency-vulnerability scanning (PR 10), and CI
-  secret scanning (PR 11) are all now implemented.** This system still
-  should not be exposed to real, non-test student data in a publicly
-  reachable, horizontally-scaled deployment until the Redis rate-limiting
-  backend lands (T2 residual) and general `/api/v1/*` rate limiting exists
-  (T11 residual) — see §11 residual risks and §13. `pip-audit` (PR 10)
-  detects known, published dependency vulnerabilities only; `gitleaks`
-  (PR 11) detects patterns resembling committed secrets only. Neither is a
-  substitute for SAST, container-image scanning, a runtime secrets
-  manager, credential rotation, or manual review.
+  enforcement (PR 7), CI dependency-vulnerability scanning (PR 10), CI
+  secret scanning (PR 11), and CI static application security testing
+  (PR 12) are all now implemented.** This system still should not be
+  exposed to real, non-test student data in a publicly reachable,
+  horizontally-scaled deployment until the Redis rate-limiting backend
+  lands (T2 residual) and general `/api/v1/*` rate limiting exists (T11
+  residual) — see §11 residual risks and §13. `pip-audit` (PR 10) detects
+  known, published dependency vulnerabilities only; `gitleaks` (PR 11)
+  detects patterns resembling committed secrets only; `bandit` (PR 12)
+  detects patterns resembling known code-level weaknesses in `app/` only.
+  None of the three is a substitute for the others, for container-image
+  scanning, for a runtime secrets manager, for credential rotation, or for
+  manual/architecture review.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
 Identity schema (PR 2B), authentication (PR 3), authorization/tenant
 isolation (PR 4), audit logging (PR 5), authentication-endpoint rate
 limiting (PR 6), CORS/TrustedHost enforcement (PR 7), CI
-dependency-vulnerability scanning (PR 10), and CI secret scanning (PR 11)
-are implemented; everything below is still approved architecture that will
-be addressed in its own future PR per the approved Phase 1.5 roadmap.
+dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), and
+CI static application security testing (PR 12) are implemented; everything
+below is still approved architecture that will be addressed in its own
+future PR per the approved Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
 | Redis-backed `RateLimiter` (horizontal scaling) | Closes T2's per-process residual |
 | General `/api/v1/*` rate limiting and abuse protection | Remaining T11 |
 | Additional browser-security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
-| DevSecOps CI checks (SAST, container-image scanning) | Remaining T15 (dependency and secret scanning are now implemented, PR 10 and PR 11) |
+| Container-image scanning | Remaining T15 (dependency scanning, secret scanning, and SAST are now implemented, PR 10, PR 11, and PR 12) |
 | Runtime secrets-manager integration, credential rotation, pre-commit secret protection | Remaining T3 residuals |
 | Observability (structured logging + redaction filter) | Reduces residual T14 |
 | Future AI-provider integration phase | Must close T8 before any real LLM call ships |
