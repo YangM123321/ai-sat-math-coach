@@ -12,13 +12,14 @@ investigation notes for that distinction).
 does **not** exist in the codebase today. Password-hashing (Argon2id),
 JWT/refresh-token authentication (PR 3), route-level authorization/tenant
 isolation (PR 4), security audit logging (PR 5), rate limiting on
-authentication endpoints (PR 6), and CORS/TrustedHost enforcement (PR 7), by
-contrast, **are implemented** — see §3 and §8 (T1, T2, T4-T7, T12, T16) for
-what that does and does not cover. Items marked "current" or described as
-"already in place" (§10) are live in `main` right now: the shared API key,
-PR1's configuration validation, PR 3's authentication endpoints, PR 4's
-centralized `AuthorizationService`, PR 5's `AuditService`, PR 6's
-`RateLimiter`, and PR 7's CORS/TrustedHost middleware.**
+authentication endpoints (PR 6), CORS/TrustedHost enforcement (PR 7), and CI
+dependency-vulnerability scanning (PR 10), by contrast, **are implemented** —
+see §3 and §8 (T1, T2, T4-T7, T12, T15, T16) for what that does and does not
+cover. Items marked "current" or described as "already in place" (§10) are
+live in `main` right now: the shared API key, PR1's configuration validation,
+PR 3's authentication endpoints, PR 4's centralized `AuthorizationService`,
+PR 5's `AuditService`, PR 6's `RateLimiter`, PR 7's CORS/TrustedHost
+middleware, and PR 10's `pip-audit` CI job.**
 
 ## 2. Security philosophy
 
@@ -104,6 +105,13 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   `Settings.cors_allowed_origins`/`trusted_hosts` (PR1) as-is with no new
   configuration or duplicate validation. See §8 (T12) for what this covers
   and does not.
+- **CI dependency-vulnerability scanning** (`.github/workflows/ci.yml`'s
+  `security` job, **already implemented**, Phase 1.5 PR 10) — `pip-audit`
+  runs against the fully resolved, installed dependency environment on
+  every push/PR, failing the build on any known published vulnerability.
+  Runs independently of the `test`/`migrations` jobs, with minimal
+  read-only (`contents: read`) permissions. See §8 (T15) for what this
+  covers and does not.
 
 `/health` and `/ready` are intentionally public. Image upload
 (`POST /api/v1/diagnostics/from-image`) fails closed (`NoOpOCRProvider`, HTTP 501)
@@ -215,7 +223,7 @@ see §8 (T12) for the enforced behavior.
 | T12 | Insecure CORS / trusted-host configuration | Medium | **Mitigated (implemented in PR7)** | `CORSMiddleware`/`TrustedHostMiddleware` (Starlette built-ins) are now wired in `app/main.py` via `app/middleware/security.py`, consuming PR1's already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` directly -- no new settings, no duplicate validation. A mismatched `Host` header gets Starlette's built-in `400 Invalid host header` (left unmodified -- see design notes in `app/middleware/security.py`); a disallowed CORS origin never receives `Access-Control-Allow-Origin` (browsers block the read; the server itself still processes and returns the response for a non-preflight request -- CORS is a browser-side control, not a server-side reject). `allow_methods`/`allow_headers` are explicit lists (`GET`/`POST`/`PATCH` and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID`), not `"*"` -- this API's surface is small and fully known, so there was no compatibility reason to fall back to a wildcard. Empty-list semantics differ deliberately by design: empty `TRUSTED_HOSTS` means allow **all** hosts (matches Starlette's own `None`-defaults-to-`["*"]` behavior), while empty `CORS_ALLOWED_ORIGINS` means allow **no** browser origins (an empty allowlist, not a wildcard) -- both are dev/test-only states, since production requires both non-empty (PR1, unchanged by this PR). `www_redirect` is disabled (an API should never 301 a non-GET request). |
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
 | T14 | Logging of secrets or personal data | Medium | **Low, fragile** | `RequestContextMiddleware` logs method/path/status/duration/request_id only — no bodies, headers, or field values. Risk is forward-looking: once JWTs/passwords/PII exist, no redaction filter exists yet to catch a careless future log statement. |
-| T15 | Dependency and supply-chain risk | Medium | **Current, unmitigated** | `requirements.txt` uses range pins, not hash pins. No dependency-vulnerability scan, secret scan, SAST, or container-image scan in CI (`.github/workflows/ci.yml` runs tests + migration validation only). |
+| T15 | Dependency and supply-chain risk | Medium | **Partially mitigated (implemented in PR10)** | `.github/workflows/ci.yml`'s `security` job runs `pip-audit` against the fully resolved, installed dependency environment (not `requirements.txt` directly) on every push/pull request, failing the build if any known published vulnerability is found -- no ignore list, no suppression, no `continue-on-error`. This detects known, publicly disclosed vulnerabilities in the exact dependency versions actually installed; it does **not** guarantee complete software supply-chain security. It does not cover: malicious or typosquatted packages, package provenance/integrity, the Docker base image or OS-level packages, or vulnerabilities that haven't been publicly disclosed yet. `requirements.txt` still uses range pins, not hash pins, and there is still no secret scanning, SAST, or container-image scanning in CI. |
 | T16 | Insufficient audit trail for security-relevant events | Medium | **Mitigated (implemented in PR5)** | `AuditService` (`app/services/audit_service.py`) writes a stable-named, append-only row to `audit_events` for every registration/login/refresh/logout(-all) outcome, every `AuthorizationService` denial, refresh-token reuse detection, and dashboard access-grant creation. No password, password hash, raw JWT, or raw refresh token is ever a parameter `record()` accepts, so none can reach the table even by accident; raw email addresses are also deliberately not stored (actor/target are opaque `users.id` values only). Writes are fail-open (see §2) and there is no query API or automated retention/purge in this PR — see §11. |
 
 ## 9. Abuse cases
@@ -283,6 +291,16 @@ see §8 (T12) for the enforced behavior.
   receive `Access-Control-Allow-Origin`, so the browser refuses to let
   `evil.example.com`'s JS read the response body (exploits/tests T12,
   mitigated; see `tests/test_security_middleware.py`).
+- **J (partially closed in PR 10):** A transitive dependency this project
+  relies on (e.g. a package pulled in by `fastapi`/`sqlalchemy`/etc., not
+  necessarily one listed directly in `requirements.txt`) receives a
+  published CVE after this codebase was last reviewed. Before PR10,
+  nothing in CI would ever notice; the vulnerable version could sit
+  unnoticed indefinitely. After PR10, the next push or pull request runs
+  `pip-audit` against the actual resolved, installed dependency set and
+  fails the build the moment that CVE is published and indexed
+  (exploits/tests T15, partially mitigated -- detection only, no
+  automatic remediation, and only for already-disclosed vulnerabilities).
 
 ## 10. Mitigations
 
@@ -325,11 +343,21 @@ see §8 (T12) for the enforced behavior.
   settings or duplicate validation logic; explicit `allow_methods`/
   `allow_headers` (not `"*"`); `www_redirect` disabled (T12) — shipped in
   Phase 1.5 PR 7.
+- CI dependency-vulnerability scanning — a dedicated, independent `security`
+  job in `.github/workflows/ci.yml` installs the application's resolved
+  dependency set, then runs `pip-audit` against the installed environment
+  (not `requirements.txt` directly), failing the build on any known
+  published vulnerability with no ignore list, suppression, or
+  `continue-on-error` (T15, partial) — shipped in Phase 1.5 PR 10. Detects
+  known, publicly disclosed vulnerabilities only; does not guarantee
+  complete supply-chain security (see T15 in §8 for what remains
+  uncovered).
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- DevSecOps CI additions — secret scanning, dependency scanning, SAST,
-  container-image scanning (T3, T15).
+- DevSecOps CI additions — secret scanning, SAST, container-image scanning
+  (T3, T15 remainder; dependency-vulnerability scanning itself is now
+  implemented, PR 10).
 - PII redaction before any future external AI-provider call (T8, T10).
 
 ## 11. Residual risks
@@ -388,8 +416,17 @@ exists in the codebase yet:**
 - **T8** cannot be fully mitigated until a concrete AI-provider integration
   exists to design the isolation boundary against; this document can only
   flag the requirement now, not close it.
-- **T15** has no automated tooling yet; manual review of `requirements.txt`
-  is the only current control.
+- **T15 residuals (PR10):** `pip-audit` only detects vulnerabilities that
+  have already been publicly disclosed and published to its vulnerability
+  data source -- it cannot catch a vulnerability before disclosure, a
+  malicious or typosquatted package, or a compromised legitimate package
+  whose maintainer account was hijacked. It audits Python dependencies
+  only: the Docker base image (`python:3.12-slim`) and any OS-level
+  packages are entirely uncovered. `requirements.txt` still uses range
+  pins, not hash pins, so no reproducible/locked dependency resolution
+  exists yet (see PR10 design notes for why locking remains a separate,
+  out-of-scope concern). No secret scanning or SAST exists in CI yet
+  either.
 - **T16 residuals:** `AuditService.record` is fail-open (§2) — an attacker
   or outage that makes `audit_events` unwritable suppresses detection
   silently while the application keeps functioning; this is an accepted
@@ -418,27 +455,31 @@ exists in the codebase yet:**
   are intentionally exempt from production-grade secret/CORS/TLS enforcement
   (`Environment.development`/`test` in `app/core/config.py`).
 - **Authentication (PR 3), authorization (PR 4), audit logging (PR 5),
-  authentication-endpoint rate limiting (PR 6), and CORS/TrustedHost
-  enforcement (PR 7) are all now implemented.** This system still should
-  not be exposed to real, non-test student data in a publicly reachable,
-  horizontally-scaled deployment until the Redis rate-limiting backend
-  lands (T2 residual) and general `/api/v1/*` rate limiting exists (T11
-  residual) — see §11 residual risks and §13.
+  authentication-endpoint rate limiting (PR 6), CORS/TrustedHost
+  enforcement (PR 7), and CI dependency-vulnerability scanning (PR 10) are
+  all now implemented.** This system still should not be exposed to real,
+  non-test student data in a publicly reachable, horizontally-scaled
+  deployment until the Redis rate-limiting backend lands (T2 residual) and
+  general `/api/v1/*` rate limiting exists (T11 residual) — see §11
+  residual risks and §13. `pip-audit` (PR 10) detects known, published
+  dependency vulnerabilities only; it is not a substitute for secret
+  scanning, SAST, container-image scanning, or manual dependency review.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
 Identity schema (PR 2B), authentication (PR 3), authorization/tenant
 isolation (PR 4), audit logging (PR 5), authentication-endpoint rate
-limiting (PR 6), and CORS/TrustedHost enforcement (PR 7) are implemented;
-everything below is still approved architecture that will be addressed in
-its own future PR per the approved Phase 1.5 roadmap.
+limiting (PR 6), CORS/TrustedHost enforcement (PR 7), and CI
+dependency-vulnerability scanning (PR 10) are implemented; everything below
+is still approved architecture that will be addressed in its own future PR
+per the approved Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
 | Redis-backed `RateLimiter` (horizontal scaling) | Closes T2's per-process residual |
 | General `/api/v1/*` rate limiting and abuse protection | Remaining T11 |
 | Additional browser-security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
-| DevSecOps CI checks (secret/dependency/SAST/container scanning) | T3, T15 |
+| DevSecOps CI checks (secret scanning, SAST, container-image scanning) | T3, remaining T15 |
 | Observability (structured logging + redaction filter) | Reduces residual T14 |
 | Future AI-provider integration phase | Must close T8 before any real LLM call ships |
 | Future privacy/data-lifecycle work | Further reduces T10 once real student PII is collected |

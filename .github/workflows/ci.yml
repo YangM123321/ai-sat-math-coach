@@ -71,3 +71,27 @@ jobs:
             exit 1
           fi
           echo "Database is at the expected head revision."
+
+  security:
+    runs-on: ubuntu-latest
+    # Independent of `test`/`migrations` (no `needs:`) -- a vulnerability
+    # finding isn't causally related to whether the app's tests pass, so
+    # gating it behind another job would only delay the security signal.
+    # Read-only: this job only checks out the repo and queries public
+    # vulnerability data; it never needs to write anything.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install application dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install pip-audit
+        run: python -m pip install pip-audit
+      - name: Audit installed dependencies for known vulnerabilities
+        run: python -m pip_audit
