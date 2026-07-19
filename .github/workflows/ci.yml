@@ -126,3 +126,63 @@ jobs:
           # design, not by accident.
           GITLEAKS_ENABLE_COMMENTS: false
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+  sast:
+    runs-on: ubuntu-latest
+    # Independent of test/migrations/security/secret-scan (no `needs:`) --
+    # same rationale as the other security jobs: a SAST finding isn't
+    # causally related to other jobs' outcomes, so gating it behind them
+    # would only delay the signal. Read-only: this job only checks out the
+    # repo and scans it locally with Bandit; it never needs to write
+    # anything except the report artifact below.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Bandit
+        run: python -m pip install bandit==1.9.4
+
+      - name: Generate full Bandit report (all severities/confidences -- visibility only)
+        # --exit-zero is Bandit's own flag (not a GitHub Actions construct):
+        # it neutralizes only exit code 1 ("issues found" -- expected here,
+        # since this step's purpose is visibility, not gating). Genuine
+        # tool/usage errors (bad arguments, an unreadable config file, exit
+        # code 2) are untouched by it and still fail the job normally --
+        # unlike `continue-on-error`, which would blindly swallow any
+        # failure reason. It also matches local reproduction exactly, where
+        # `continue-on-error` has no effect at all. --exit-zero changes only
+        # the process exit code, never what is written to the report: every
+        # finding is still present in bandit-report.json, unfiltered (see
+        # architecture-review verification that its `results` are
+        # byte-identical with and without the flag). The actual gate
+        # remains the separate, unmodified "Enforce Bandit gate" step below,
+        # whose exit code is never rewritten.
+        run: bandit -r app -f json -o bandit-report.json --exit-zero
+
+      - name: Upload Bandit report
+        # v7, not v4: v4 targets the Node 20 runtime GitHub is deprecating.
+        # v5-v7 make no breaking change to the `name`/`path` inputs used
+        # here (confirmed against each release's changelog); v6 is the
+        # first version that actually defaults to the Node 24 runtime (v5
+        # only added preliminary support without switching the default).
+        # upload-artifact isn't used by any other job in this file, so this
+        # upgrade doesn't create version inconsistency elsewhere.
+        uses: actions/upload-artifact@v7
+        with:
+          name: bandit-report
+          path: bandit-report.json
+
+      - name: Enforce Bandit gate (medium+ severity, medium+ confidence)
+        # Scans only app/ -- the production application source -- not
+        # tests/, scripts/, or alembic/. Medium+ severity and medium+
+        # confidence (-ll -ii): the baseline false-positive source at this
+        # repo's size (B105, keyword-based hardcoded-password matches on
+        # non-secret constants) reports at Low severity, so this threshold
+        # filters exactly that noise without silencing anything at or above
+        # Medium. Natural exit code only -- no continue-on-error, no
+        # `|| true`, no exit-code rewriting.
+        run: bandit -r app -ll -ii
