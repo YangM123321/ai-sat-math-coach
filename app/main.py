@@ -15,6 +15,7 @@ from app.api.routes.dashboard import router as dashboard_router
 from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.auth import router as auth_router
 from app.middleware.request_context import RequestContextMiddleware
+from app.middleware.security import configure_security_middleware
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -32,6 +33,7 @@ app = FastAPI(
     description="Production-style SAT Math Coach with diagnostics, learner modeling, personalized learning, Socratic tutoring, and role-aware dashboards, and a measurable continuous-improvement loop.",
     lifespan=lifespan,
 )
+configure_security_middleware(app, settings)
 app.add_middleware(RequestContextMiddleware)
 app.add_exception_handler(AppError, app_error_handler)
 

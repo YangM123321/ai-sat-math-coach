@@ -293,3 +293,17 @@ See `docs/security/THREAT_MODEL.md` (T16) for the full event matrix, schema, and
 `/api/v1/auth/*` is throttled by a sliding-window `RateLimiter`: login has its own per-IP and per-account (normalized email) tiers, the other four auth endpoints share a coarser per-IP tier. A tripped limit returns `429` with `Retry-After`/`X-RateLimit-*` headers and is recorded as an audit event. Off by default (`RATE_LIMIT_ENABLED=false`); production startup refuses to boot without it explicitly enabled.
 
 See `docs/security/THREAT_MODEL.md` (T2) for the algorithm, configuration, fail-open rationale, and the Redis migration path, and `app/services/rate_limiter_service.py` for the implementation.
+
+## CORS & Trusted Host Enforcement (Phase 1.5 PR 7)
+
+`CORSMiddleware` and `TrustedHostMiddleware` (Starlette built-ins, `app/middleware/security.py`) are wired at runtime, consuming the same `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` settings PR1 already validates — no new configuration, no duplicate validation logic.
+
+**Empty-list semantics are deliberately asymmetric between the two settings** (they come from how each Starlette middleware treats an empty allowlist, not a choice made here):
+- Empty `TRUSTED_HOSTS` → **allow all hosts.** An empty Python list is passed to `TrustedHostMiddleware` as `None`, which Starlette itself defaults to `["*"]` — matching today's already-open local-dev behavior.
+- Empty `CORS_ALLOWED_ORIGINS` → **allow no browser origins.** No `Origin` ever receives `Access-Control-Allow-Origin`, so cross-origin browser JS is blocked; non-browser callers (curl, TestClient, mobile apps, server-to-server) are entirely unaffected, since CORS is enforced by the browser, not this API.
+
+Both settings are already required to be non-empty and wildcard-free in production (PR1's startup validation, unchanged by this PR).
+
+`allow_methods`/`allow_headers` are **explicit lists**, not `"*"`: `GET`/`POST`/`PATCH` (every method any route in this app actually declares) and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID` (every non-safelisted header a legitimate client needs). This API's surface is small and fully known, so there's no compatibility reason to fall back to a wildcard the way a large or evolving public API might need — see `app/middleware/security.py` for the derivation. `allow_credentials=False` throughout (Bearer-token auth, no cookies) and `www_redirect=False` (a 301 on a non-`GET` request is broken for most HTTP clients; this is an API, not a browser-navigated site).
+
+See `docs/security/THREAT_MODEL.md` (T12) for the full behavior (including the built-in `400` responses for a mismatched `Host` header or disallowed CORS preflight, deliberately left as Starlette's default shape rather than wrapped in this app's JSON error envelope) and `app/middleware/security.py` for the implementation.
