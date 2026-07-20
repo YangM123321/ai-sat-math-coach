@@ -186,3 +186,115 @@ jobs:
         # Medium. Natural exit code only -- no continue-on-error, no
         # `|| true`, no exit-code rewriting.
         run: bandit -r app -ll -ii
+
+  image-scan:
+    runs-on: ubuntu-latest
+    # Independent of test/migrations/security/secret-scan/sast (no `needs:`)
+    # -- same rationale as the other security jobs: a vulnerability found in
+    # the built image isn't causally related to whether the app's tests
+    # pass, so gating it behind another job would only delay the signal.
+    # Builds and scans the application's own Docker image locally -- the
+    # image is never pushed to any registry, so no registry credentials are
+    # needed anywhere in this job.
+    permissions:
+      contents: read
+      security-events: write
+    timeout-minutes: 15
+    concurrency:
+      group: image-scan-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image locally (never pushed to any registry)
+        run: docker build -t ai-sat-math-coach:ci-scan .
+
+      - name: Compute daily cache key
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability database
+        # Path matches trivy-action's own default cache-dir exactly. Keyed
+        # by UTC date so the cache rotates daily instead of growing stale
+        # indefinitely; restore-keys falls back to the most recent available
+        # cache on a miss, still avoiding a full re-download in most cases.
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: trivy-db-${{ steps.date.outputs.date }}
+          restore-keys: |
+            trivy-db-
+
+      - name: Full vulnerability scan, SARIF (unfiltered -- visibility only, never fails the job)
+        # Pinned to an exact commit SHA, not a mutable tag -- aquasecurity/
+        # trivy-action suffered a real supply-chain compromise in March 2026
+        # (76 of 77 tags force-pushed to a malicious commit for ~12 hours,
+        # GHSA-69fq-xp46-6x23). v0.36.0 (this commit) is the current
+        # release, published well after remediation, and is not in the
+        # affected range for that incident or for CVE-2026-26189 (fixed
+        # >=0.34.1). `version: v0.72.0` explicitly overrides this action's
+        # own bundled Trivy default (v0.70.0) to use a release that includes
+        # the fix for CVE-2026-55092 (Trivy path traversal, fixed 0.71.1) --
+        # not otherwise reachable here anyway, since that CVE requires
+        # overriding the default (Aqua-operated) vulnerability-database
+        # source, which this workflow never does.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-sat-math-coach:ci-scan
+          scan-type: image
+          scanners: vuln
+          vuln-type: os,library
+          format: sarif
+          output: trivy-results.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '0'
+          version: v0.72.0
+
+      - name: Full vulnerability scan, JSON (unfiltered -- visibility only, never fails the job)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-sat-math-coach:ci-scan
+          scan-type: image
+          scanners: vuln
+          vuln-type: os,library
+          format: json
+          output: trivy-results.json
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '0'
+          version: v0.72.0
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Upload JSON report artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-report
+          path: trivy-results.json
+
+      - name: Enforce gate (fixable HIGH/CRITICAL vulnerabilities only)
+        # A deliberately separate, second scan invocation from the
+        # visibility scans above -- mirrors the sast job's own "generate
+        # full unfiltered report" / "enforce gate" split. Fails the job
+        # (exit-code 1) only for a fixable HIGH or CRITICAL finding;
+        # everything else (lower severity, or a HIGH/CRITICAL with no
+        # available fix) is visible above but never blocks. A scanner/
+        # database infrastructure failure (e.g. the Trivy DB endpoint being
+        # unreachable) fails this step for a distinct reason -- a non-zero
+        # exit here without Trivy's own vulnerability table in the log
+        # above it indicates a tool/infrastructure problem, not a finding.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-sat-math-coach:ci-scan
+          scan-type: image
+          scanners: vuln
+          vuln-type: os,library
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          version: v0.72.0

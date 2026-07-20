@@ -15,16 +15,17 @@ isolation (PR 4), security audit logging (PR 5), rate limiting on
 authentication endpoints (PR 6), CORS/TrustedHost enforcement (PR 7), CI
 dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), CI
 static application security testing (PR 12), security response headers
-(PR 13), and general `/api/v1/*` rate limiting and abuse protection (PR 14),
-by contrast, **are implemented** — see §3 and §8 (T1, T2, T3, T4-T7,
-T11, T12, T15, T16) for what that does and does not cover. Items marked
-"current" or described as "already in place" (§10) are live in `main` right
+(PR 13), general `/api/v1/*` rate limiting and abuse protection (PR 14),
+and container-image vulnerability scanning (PR 15), by contrast, **are
+implemented** — see §3 and §8 (T1, T2, T3, T4-T7, T11, T12, T15, T16) for
+what that does and does not cover. Items marked "current" or described as
+"already in place" (§10) are live in `main` right
 now: the shared API key, PR1's configuration validation, PR 3's authentication
 endpoints, PR 4's centralized `AuthorizationService`, PR 5's `AuditService`,
 PR 6's `RateLimiter`, PR 7's CORS/TrustedHost middleware, PR 10's `pip-audit`
 CI job, PR 11's Gitleaks CI job, PR 12's Bandit CI job, PR 13's
-`SecurityHeadersMiddleware`, and PR 14's general `/api/v1/*` rate-limiting
-tiers.**
+`SecurityHeadersMiddleware`, PR 14's general `/api/v1/*` rate-limiting
+tiers, and PR 15's `image-scan` CI job.**
 
 ## 2. Security philosophy
 
@@ -263,7 +264,7 @@ see §8 (T12) for the enforced behavior.
 | T12 | Insecure CORS / trusted-host configuration | Medium | **Mitigated (implemented in PR7, extended in PR13)** | `CORSMiddleware`/`TrustedHostMiddleware` (Starlette built-ins) are now wired in `app/main.py` via `app/middleware/security.py`, consuming PR1's already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` directly -- no new settings, no duplicate validation. A mismatched `Host` header gets Starlette's built-in `400 Invalid host header` (left unmodified -- see design notes in `app/middleware/security.py`); a disallowed CORS origin never receives `Access-Control-Allow-Origin` (browsers block the read; the server itself still processes and returns the response for a non-preflight request -- CORS is a browser-side control, not a server-side reject). `allow_methods`/`allow_headers` are explicit lists (`GET`/`POST`/`PATCH` and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID`), not `"*"` -- this API's surface is small and fully known, so there was no compatibility reason to fall back to a wildcard. Empty-list semantics differ deliberately by design: empty `TRUSTED_HOSTS` means allow **all** hosts (matches Starlette's own `None`-defaults-to-`["*"]` behavior), while empty `CORS_ALLOWED_ORIGINS` means allow **no** browser origins (an empty allowlist, not a wildcard) -- both are dev/test-only states, since production requires both non-empty (PR1, unchanged by this PR). `www_redirect` is disabled (an API should never 301 a non-GET request). **PR13** adds `SecurityHeadersMiddleware` (`app/middleware/security_headers.py`), stamping `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, a route-scoped `Cache-Control: no-store` on `/api/v1/*`, and `Strict-Transport-Security` (production only, `max-age=31536000`, no `includeSubDomains`/`preload`) onto every response that returns normally through the middleware chain. CSP exempts exactly `request.app.docs_url`/`request.app.redoc_url` (derived dynamically, never hardcoded `/docs`/`/redoc` literals); `request.app.openapi_url` is deliberately not exempted, since CSP governs the document that initiates a fetch, not the fetched resource's own response. **Operational prerequisite**: this application cannot independently verify that TLS is genuinely enforced by the deployment edge -- `uvicorn`'s `forwarded_allow_ips` defaults to `127.0.0.1` and nothing in this repo's `Dockerfile`/`docker-compose.yml` narrows or widens that default, so `request.url.scheme`/`X-Forwarded-Proto` cannot currently be trusted as a signal of the original client connection's protocol; HSTS is therefore gated solely on the operator-controlled `ENVIRONMENT=production` setting, which must only be set once genuine, end-to-end HTTPS is actually in place. Per RFC 6797 §7.2, compliant browsers ignore `Strict-Transport-Security` received over a non-HTTPS connection, bounding the consequence of a premature `ENVIRONMENT=production` setting. **Middleware coverage boundary**: headers apply to every response returned normally through `call_next` -- successful responses, FastAPI validation errors, `HTTPException` responses, this application's handled `AppError` responses (including 401/403/429), and `TrustedHostMiddleware`/CORS rejection responses -- but **not** to a bare `500` produced by a genuinely unhandled exception once it propagates past every user-added middleware to Starlette's `ServerErrorMiddleware`; closing that gap would require a catch-all exception handler, which PR13 does not add. |
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
 | T14 | Logging of secrets or personal data | Medium | **Low, fragile** | `RequestContextMiddleware` logs method/path/status/duration/request_id only — no bodies, headers, or field values. Risk is forward-looking: once JWTs/passwords/PII exist, no redaction filter exists yet to catch a careless future log statement. |
-| T15 | Dependency and supply-chain risk | Medium | **Partially mitigated (implemented in PR10)** | `.github/workflows/ci.yml`'s `security` job runs `pip-audit` against the fully resolved, installed dependency environment (not `requirements.txt` directly) on every push/pull request, failing the build if any known published vulnerability is found -- no ignore list, no suppression, no `continue-on-error`. This detects known, publicly disclosed vulnerabilities in the exact dependency versions actually installed; it does **not** guarantee complete software supply-chain security. It does not cover: malicious or typosquatted packages, package provenance/integrity, the Docker base image or OS-level packages, or vulnerabilities that haven't been publicly disclosed yet. `requirements.txt` still uses range pins, not hash pins. CI secret scanning (PR 11) and CI static application security testing (PR 12, `bandit`) are now implemented (see §3), but neither substitutes for dependency/supply-chain coverage; there is still no container-image scanning in CI. |
+| T15 | Dependency and supply-chain risk | Medium | **Further mitigated (PR10 dependency scanning; PR15 container-image vulnerability scanning)** | `.github/workflows/ci.yml`'s `security` job runs `pip-audit` against the fully resolved, installed dependency environment (not `requirements.txt` directly) on every push/pull request, failing the build if any known published vulnerability is found -- no ignore list, no suppression, no `continue-on-error`. This detects known, publicly disclosed vulnerabilities in the exact dependency versions actually installed; it does **not** guarantee complete software supply-chain security. It does not cover: malicious or typosquatted packages, package provenance/integrity, or vulnerabilities that haven't been publicly disclosed yet. `requirements.txt` still uses range pins, not hash pins. **PR15** adds a new `image-scan` job that builds the application's own Docker image locally (never pushed to any registry -- no registry credentials needed) and scans it with Trivy (`aquasecurity/trivy-action`, pinned to an exact commit SHA, never a mutable tag -- see §11 for why this matters specifically for this action) for known vulnerabilities in both OS packages and Python libraries -- exactly the "Docker base image or OS-level packages" gap the pre-PR15 version of this row named as uncovered. A full, unfiltered scan (all severities, fixed and unfixed) is always generated and uploaded both as a SARIF file to the GitHub Security tab and as a JSON build artifact, for visibility; a separate, second scan invocation is the actual merge-blocking gate, filtered to `HIGH`/`CRITICAL` severity with `--ignore-unfixed` -- mirroring the `sast` job's own "generate full report, then enforce a narrower gate" pattern (PR12). Only *fixable* `HIGH`/`CRITICAL` findings fail the build; lower severities and unfixable findings remain visible but non-blocking, so the gate stays actionable rather than blocking indefinitely on a base-image CVE nobody can currently patch. CI secret scanning (PR 11) and CI static application security testing (PR 12, `bandit`) are also implemented (see §3). **Not covered by PR15**: container **configuration**/misconfiguration scanning (e.g. the image currently runs as root -- no Dockerfile change was made by PR15, deliberately, to keep this PR scoped to vulnerability scanning only; Dockerfile hardening is explicitly deferred to a future PR -- see §13); image signing/provenance (cosign/Sigstore); SBOM generation or publication; runtime container protection; registry-side continuous rescanning (no image is pushed to any registry). |
 | T16 | Insufficient audit trail for security-relevant events | Medium | **Mitigated (implemented in PR5)** | `AuditService` (`app/services/audit_service.py`) writes a stable-named, append-only row to `audit_events` for every registration/login/refresh/logout(-all) outcome, every `AuthorizationService` denial, refresh-token reuse detection, and dashboard access-grant creation. No password, password hash, raw JWT, or raw refresh token is ever a parameter `record()` accepts, so none can reach the table even by accident; raw email addresses are also deliberately not stored (actor/target are opaque `users.id` values only). Writes are fail-open (see §2) and there is no query API or automated retention/purge in this PR — see §11. |
 
 ## 9. Abuse cases
@@ -464,12 +465,28 @@ see §8 (T12) for the enforced behavior.
   Both false positives and false negatives are expected, normal
   characteristics of pattern-based analysis, not signs of tool
   malfunction — see T15 in §8 and §11 for what remains uncovered.
+- CI container-image vulnerability scanning — a dedicated, independent
+  `image-scan` job in `.github/workflows/ci.yml` builds the application's
+  Docker image locally (never pushed to any registry) and scans it with
+  Trivy (`aquasecurity/trivy-action`, pinned to an exact commit SHA) for
+  known OS-package and Python-library vulnerabilities, uploading a full,
+  unfiltered SARIF report to the GitHub Security tab and a JSON artifact,
+  and failing the build only on a fixable `HIGH`/`CRITICAL` finding (T15,
+  further mitigated) — shipped in Phase 1.5 PR 15. Deliberately scoped to
+  vulnerability scanning only; does not scan for container
+  misconfiguration (the image still runs as root today), does not sign or
+  attest the image, and does not generate an SBOM — see T15 in §8 and §11
+  for what remains uncovered, and §13 for the deferred Dockerfile-hardening
+  follow-up.
 
 **Planned in subsequent Phase 1.5 PRs — approved architecture, none of this
 exists in the codebase yet:**
-- DevSecOps CI additions — container-image scanning (remaining T15;
-  dependency-vulnerability scanning, secret scanning, and SAST are now
-  implemented, PR 10, PR 11, and PR 12 respectively).
+- Dockerfile hardening (non-root `USER`, base-image digest pinning,
+  `.dockerignore` improvements for this project's own local scratch files,
+  `requirements.txt` dev/runtime dependency separation) and container
+  **configuration**/misconfiguration scanning — deliberately deferred out
+  of PR15's scope (remaining T15 residual; vulnerability scanning itself
+  is now implemented, PR 15).
 - PII redaction before any future external AI-provider call (T8, T10).
 
 ## 11. Residual risks
@@ -581,17 +598,32 @@ exists in the codebase yet:**
 - **T8** cannot be fully mitigated until a concrete AI-provider integration
   exists to design the isolation boundary against; this document can only
   flag the requirement now, not close it.
-- **T15 residuals (PR10):** `pip-audit` only detects vulnerabilities that
-  have already been publicly disclosed and published to its vulnerability
-  data source -- it cannot catch a vulnerability before disclosure, a
-  malicious or typosquatted package, or a compromised legitimate package
-  whose maintainer account was hijacked. It audits Python dependencies
-  only: the Docker base image (`python:3.12-slim`) and any OS-level
-  packages are entirely uncovered. `requirements.txt` still uses range
-  pins, not hash pins, so no reproducible/locked dependency resolution
-  exists yet (see PR10 design notes for why locking remains a separate,
-  out-of-scope concern). No secret scanning or SAST exists in CI yet
-  either.
+- **T15 residuals (PR10, PR15):** `pip-audit` only detects vulnerabilities
+  that have already been publicly disclosed and published to its
+  vulnerability data source -- it cannot catch a vulnerability before
+  disclosure, a malicious or typosquatted package, or a compromised
+  legitimate package whose maintainer account was hijacked.
+  `requirements.txt` still uses range pins, not hash pins, so no
+  reproducible/locked dependency resolution exists yet (see PR10 design
+  notes for why locking remains a separate, out-of-scope concern).
+  **PR15's** `image-scan` job closes the "Docker base image/OS-level
+  packages entirely uncovered" gap this bullet previously named, but only
+  for known, published *vulnerabilities* -- it does not scan for
+  misconfiguration (the image still runs as root, has an unpinned
+  floating base-image tag, and a single `requirements.txt` that installs
+  `pytest`/`pytest-cov` into the runtime image; all deliberately deferred
+  to a future Dockerfile-hardening PR, not fixed by PR15 -- see §13), does
+  not sign or attest the image, does not generate or publish an SBOM, does
+  not provide runtime container protection, and does not rescan an image
+  at rest in a registry (no image is pushed to any registry by this
+  project). Its own vulnerability-database dependency
+  (`ghcr.io/aquasecurity/trivy-db`) is an additional, new external
+  network dependency this project's CI now relies on, mitigated by
+  caching and by treating a database-fetch failure as a distinct
+  tool-infrastructure error rather than a security finding. Secret
+  scanning (PR 11) and SAST (PR 12) are both already implemented in CI
+  (see §3, §10) -- unlike an earlier version of this bullet, this is not
+  a remaining gap.
 - **T16 residuals:** `AuditService.record` is fail-open (§2) — an attacker
   or outage that makes `audit_events` unwritable suppresses detection
   silently while the application keeps functioning; this is an accepted
@@ -640,9 +672,12 @@ exists in the codebase yet:**
   detects patterns resembling known code-level weaknesses in `app/` only;
   `SecurityHeadersMiddleware` (PR 13) adds browser-facing defense-in-depth
   headers but does not itself enforce or verify that TLS is genuinely in
-  place. None of these controls is a substitute for the others, for
-  container-image scanning, for a runtime secrets manager, for credential
-  rotation, or for manual/architecture review.
+  place; `Trivy` (PR 15) detects known, published vulnerabilities in the
+  built container image's OS and Python packages only -- it does not scan
+  for image misconfiguration, sign the image, or generate an SBOM. None of
+  these controls is a substitute for the others, for image
+  signing/SBOM/runtime container protection, for a runtime secrets
+  manager, for credential rotation, or for manual/architecture review.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
@@ -651,10 +686,10 @@ isolation (PR 4), audit logging (PR 5), authentication-endpoint rate
 limiting (PR 6), CORS/TrustedHost enforcement (PR 7), CI
 dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), CI
 static application security testing (PR 12), security response headers
-(PR 13), and general `/api/v1/*` rate limiting and abuse protection (PR 14)
-are implemented; everything below is still approved architecture
-that will be addressed in its own future PR per the approved Phase 1.5
-roadmap.
+(PR 13), general `/api/v1/*` rate limiting and abuse protection (PR 14),
+and container-image vulnerability scanning (PR 15) are implemented;
+everything below is still approved architecture that will be addressed in
+its own future PR per the approved Phase 1.5 roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
@@ -662,7 +697,7 @@ roadmap.
 | Reverse-proxy/ingress deployment | Would resolve the browser↔API TLS trust-boundary gap noted in §12 and enable a properly-scoped, proxy-aware HSTS and rate-limiting client-IP resolution |
 | Vendoring Swagger UI/ReDoc assets locally | Would close the documentation-page CSP residual (T12) |
 | CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
-| Container-image scanning | Remaining T15 (dependency scanning, secret scanning, and SAST are now implemented, PR 10, PR 11, and PR 12) |
+| Dockerfile hardening (non-root `USER`, base-image digest pinning, `.dockerignore` improvements, `requirements.txt` dev/runtime separation) and container configuration/misconfiguration scanning | Remaining T15 residual; vulnerability scanning itself is implemented (PR 15) |
 | Runtime secrets-manager integration, credential rotation, pre-commit secret protection | Remaining T3 residuals |
 | Observability (structured logging + redaction filter) | Reduces residual T14 |
 | Future AI-provider integration phase | Must close T8 before any real LLM call ships |
