@@ -196,6 +196,18 @@ jobs:
     # Builds and scans the application's own Docker image locally -- the
     # image is never pushed to any registry, so no registry credentials are
     # needed anywhere in this job.
+    #
+    # Enforcement-before-reporting ordering (corrective, post-review): the
+    # fixable HIGH/CRITICAL gate runs immediately after the image is built
+    # and scanned, *before* SARIF generation/upload. Every step after the
+    # gate is reporting, not enforcement, and is marked `continue-on-error:
+    # true` with `if: always()` so that a SARIF-upload permission failure
+    # (expected on a fork-originated pull_request -- GITHUB_TOKEN is
+    # downgraded to read-only there, so `security-events: write` is
+    # unavailable regardless of what this file requests) or any other
+    # reporting-step failure can never prevent the gate from running or be
+    # mistaken for the gate's own result. The gate step itself has no
+    # continue-on-error and is the only step whose failure fails this job.
     permissions:
       contents: read
       security-events: write
@@ -207,6 +219,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image locally (never pushed to any registry)
+        # No continue-on-error here, deliberately -- with no image, nothing
+        # downstream (reporting or enforcement) can run meaningfully, so a
+        # build failure must stop the job.
         run: docker build -t ai-sat-math-coach:ci-scan .
 
       - name: Compute daily cache key
@@ -225,7 +240,7 @@ jobs:
           restore-keys: |
             trivy-db-
 
-      - name: Full vulnerability scan, SARIF (unfiltered -- visibility only, never fails the job)
+      - name: Full vulnerability scan, JSON (unfiltered -- reporting only, never fails the job)
         # Pinned to an exact commit SHA, not a mutable tag -- aquasecurity/
         # trivy-action suffered a real supply-chain compromise in March 2026
         # (76 of 77 tags force-pushed to a malicious commit for ~12 hours,
@@ -237,21 +252,10 @@ jobs:
         # the fix for CVE-2026-55092 (Trivy path traversal, fixed 0.71.1) --
         # not otherwise reachable here anyway, since that CVE requires
         # overriding the default (Aqua-operated) vulnerability-database
-        # source, which this workflow never does.
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ai-sat-math-coach:ci-scan
-          scan-type: image
-          scanners: vuln
-          vuln-type: os,library
-          format: sarif
-          output: trivy-results.sarif
-          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: '0'
-          version: v0.72.0
-
-      - name: Full vulnerability scan, JSON (unfiltered -- visibility only, never fails the job)
+        # source, which this workflow never does. `continue-on-error: true`
+        # -- reporting, not enforcement; a failure here must not stop the
+        # gate below from running.
+        continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ai-sat-math-coach:ci-scan
@@ -265,28 +269,23 @@ jobs:
           exit-code: '0'
           version: v0.72.0
 
-      - name: Upload SARIF to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
-        with:
-          sarif_file: trivy-results.sarif
-
-      - name: Upload JSON report artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: trivy-report
-          path: trivy-results.json
-
       - name: Enforce gate (fixable HIGH/CRITICAL vulnerabilities only)
-        # A deliberately separate, second scan invocation from the
-        # visibility scans above -- mirrors the sast job's own "generate
-        # full unfiltered report" / "enforce gate" split. Fails the job
+        # The actual security enforcement for this job -- deliberately runs
+        # before any reporting step that could fail for reasons unrelated to
+        # vulnerabilities (SARIF-upload permissions, a transient GitHub
+        # code-scanning outage, etc.). `if: always()` makes it run even if
+        # the JSON reporting scan above failed; no `continue-on-error`, no
+        # `|| true`, no pipeline -- this is the one step in the job whose
+        # natural, unmodified exit code is allowed to fail the build. Fails
         # (exit-code 1) only for a fixable HIGH or CRITICAL finding;
         # everything else (lower severity, or a HIGH/CRITICAL with no
-        # available fix) is visible above but never blocks. A scanner/
-        # database infrastructure failure (e.g. the Trivy DB endpoint being
-        # unreachable) fails this step for a distinct reason -- a non-zero
-        # exit here without Trivy's own vulnerability table in the log
-        # above it indicates a tool/infrastructure problem, not a finding.
+        # available fix) is visible in the JSON/SARIF reports but never
+        # blocks. A scanner/database infrastructure failure (e.g. the Trivy
+        # DB endpoint being unreachable) fails this step for a distinct
+        # reason -- a non-zero exit here without Trivy's own vulnerability
+        # table in the log above it indicates a tool/infrastructure
+        # problem, not a finding.
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ai-sat-math-coach:ci-scan
@@ -298,3 +297,64 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           version: v0.72.0
+
+      - name: Full vulnerability scan, SARIF (unfiltered -- reporting only, never fails the job)
+        # Runs regardless of the gate's outcome (`if: always()`) so the
+        # full report is available even when the gate above has already
+        # failed the build -- exactly when a maintainer most needs it.
+        # `continue-on-error: true` -- reporting, not enforcement.
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ai-sat-math-coach:ci-scan
+          scan-type: image
+          scanners: vuln
+          vuln-type: os,library
+          format: sarif
+          output: trivy-results.sarif
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '0'
+          version: v0.72.0
+
+      - name: Upload SARIF to GitHub Security tab
+        # Best-effort reporting, not enforcement -- see the job-level
+        # comment above. Two independent safeguards, deliberately combined:
+        # (1) the `if:` condition below skips this step entirely for a
+        # fork-originated pull_request, where GITHUB_TOKEN is downgraded to
+        # read-only by GitHub itself regardless of the `permissions:` block
+        # above, so the upload would be guaranteed to fail on a permission
+        # error -- skipping it there accurately reflects a restriction this
+        # workflow cannot lift (doing so would require `pull_request_target`,
+        # which runs untrusted fork code with this repository's own
+        # elevated permissions -- deliberately not used here). Push events
+        # and same-repository pull requests (source repo == target repo)
+        # are unaffected and still upload normally. (2) `continue-on-error:
+        # true` additionally absorbs any other, unrelated upload failure
+        # (e.g. a transient GitHub code-scanning outage) so it can never
+        # affect this job's overall result either. `if: always()` (ANDed
+        # with the fork-safety check) lets this still run even if the gate
+        # above already failed.
+        if: always() && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Upload JSON report artifact
+        # Reporting, not enforcement -- runs regardless of the gate's
+        # outcome or any earlier reporting-step failure, and never fails
+        # the job itself. This artifact (not the Security tab -- see the
+        # job-level comment) is the authoritative, always-available,
+        # downloadable vulnerability report, including on fork PRs where
+        # SARIF upload is skipped above. 30-day retention: long enough for
+        # a maintainer to review a flagged build without indefinitely
+        # accumulating scan history.
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: trivy-report
+          path: trivy-results.json
+          retention-days: 30
