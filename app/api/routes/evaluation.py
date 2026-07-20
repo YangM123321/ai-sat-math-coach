@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, Query, status
-from app.api.dependencies import get_evaluation_service, require_admin
+from app.api.dependencies import get_evaluation_service, rate_limit_api_admin, require_admin
 from app.schemas.evaluation import *
 from app.services.evaluation_service import EvaluationService
 
 # Evaluation is a purely internal ML-ops surface (no student concept at
 # all) -- every route requires admin, enforced once at the router level
-# rather than repeated per-route (Phase 1.5 PR 4).
-router=APIRouter(prefix="/api/v1/evaluation",tags=["evaluation"],dependencies=[Depends(require_admin)])
+# rather than repeated per-route (Phase 1.5 PR 4). rate_limit_api_admin is
+# likewise attached once here (Phase 1.5 PR 14) rather than per-route,
+# since every route in this router shares the same administrative category.
+router=APIRouter(prefix="/api/v1/evaluation",tags=["evaluation"],dependencies=[Depends(require_admin),Depends(rate_limit_api_admin)])
 
 @router.post("/runs",response_model=EvaluationRunResponse,status_code=status.HTTP_201_CREATED)
 def create_run(request:EvaluationRunCreate,service:EvaluationService=Depends(get_evaluation_service)):

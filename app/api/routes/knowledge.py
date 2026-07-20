@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
-from app.api.dependencies import get_authorization_service, get_current_user, get_knowledge_service, require_admin
+from app.api.dependencies import get_authorization_service, get_current_user, get_knowledge_service, rate_limit_api_admin, rate_limit_api_read, rate_limit_api_write, require_admin
 from app.models.user import User
 from app.schemas.knowledge import (
     KnowledgeGraphResponse,
@@ -27,7 +27,7 @@ def translate_error(exc: Exception):
     raise exc
 
 
-@router.post("/skills", response_model=SkillResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
+@router.post("/skills", response_model=SkillResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin), Depends(rate_limit_api_admin)])
 def create_skill(
     request: SkillCreate,
     service: KnowledgeService = Depends(get_knowledge_service),
@@ -38,12 +38,12 @@ def create_skill(
         translate_error(exc)
 
 
-@router.get("/skills", response_model=list[SkillResponse])
+@router.get("/skills", response_model=list[SkillResponse], dependencies=[Depends(rate_limit_api_read)])
 def list_skills(service: KnowledgeService = Depends(get_knowledge_service), user: User = Depends(get_current_user)):
     return service.list_skills()
 
 
-@router.post("/skill-relationships", response_model=RelationshipResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
+@router.post("/skill-relationships", response_model=RelationshipResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin), Depends(rate_limit_api_admin)])
 def create_relationship(
     request: RelationshipCreate,
     service: KnowledgeService = Depends(get_knowledge_service),
@@ -54,7 +54,7 @@ def create_relationship(
         translate_error(exc)
 
 
-@router.post("/mastery/evidence", response_model=MasteryEventResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/mastery/evidence", response_model=MasteryEventResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(rate_limit_api_write)])
 def apply_mastery_evidence(
     request: MasteryEvidenceInput,
     service: KnowledgeService = Depends(get_knowledge_service),
@@ -68,7 +68,7 @@ def apply_mastery_evidence(
         translate_error(exc)
 
 
-@router.get("/students/{student_id}/knowledge-profile", response_model=KnowledgeProfileResponse)
+@router.get("/students/{student_id}/knowledge-profile", response_model=KnowledgeProfileResponse, dependencies=[Depends(rate_limit_api_read)])
 def get_profile(
     student_id: str,
     service: KnowledgeService = Depends(get_knowledge_service),
@@ -79,7 +79,7 @@ def get_profile(
     return service.get_profile(student_id)
 
 
-@router.get("/students/{student_id}/knowledge-graph", response_model=KnowledgeGraphResponse)
+@router.get("/students/{student_id}/knowledge-graph", response_model=KnowledgeGraphResponse, dependencies=[Depends(rate_limit_api_read)])
 def get_graph(
     student_id: str,
     service: KnowledgeService = Depends(get_knowledge_service),

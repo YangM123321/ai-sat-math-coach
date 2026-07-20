@@ -15,6 +15,7 @@ VALID_PRODUCTION_ENV = {
     "REQUIRE_API_KEY": "false",
     "API_KEY": "",
     "RATE_LIMIT_ENABLED": "true",
+    "RATE_LIMIT_API_ENABLED": "true",
 }
 
 
@@ -108,6 +109,7 @@ def test_production_boots_when_fully_configured():
         ({"TRUSTED_HOSTS": "*"}, "TRUSTED_HOSTS"),
         ({"DEBUG": "true"}, "DEBUG"),
         ({"RATE_LIMIT_ENABLED": "false"}, "RATE_LIMIT_ENABLED"),
+        ({"RATE_LIMIT_API_ENABLED": "false"}, "RATE_LIMIT_API_ENABLED"),
     ],
 )
 def test_production_refuses_individual_violations(override, expected_message):
@@ -185,6 +187,97 @@ def test_production_reports_multiple_violations_together():
     assert "SECRET_KEY" in message
     assert "CORS_ALLOWED_ORIGINS" in message
     assert "DEBUG" in message
+
+
+# --- General API rate limiting (Phase 1.5 PR 14) ---------------------------
+
+
+def test_rate_limit_api_defaults():
+    settings = _settings(ENVIRONMENT="development")
+    assert settings.rate_limit_api_enabled is False
+    assert settings.rate_limit_api_perimeter_max_attempts == 300
+    assert settings.rate_limit_api_perimeter_window_seconds == 300
+    assert settings.rate_limit_api_read_max_attempts == 120
+    assert settings.rate_limit_api_read_window_seconds == 60
+    assert settings.rate_limit_api_write_max_attempts == 30
+    assert settings.rate_limit_api_write_window_seconds == 60
+    assert settings.rate_limit_api_expensive_max_attempts == 20
+    assert settings.rate_limit_api_expensive_window_seconds == 60
+    assert settings.rate_limit_api_admin_max_attempts == 60
+    assert settings.rate_limit_api_admin_window_seconds == 60
+    assert settings.rate_limit_max_stored_keys == 50_000
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "RATE_LIMIT_API_PERIMETER_MAX_ATTEMPTS",
+        "RATE_LIMIT_API_PERIMETER_WINDOW_SECONDS",
+        "RATE_LIMIT_API_READ_MAX_ATTEMPTS",
+        "RATE_LIMIT_API_READ_WINDOW_SECONDS",
+        "RATE_LIMIT_API_WRITE_MAX_ATTEMPTS",
+        "RATE_LIMIT_API_WRITE_WINDOW_SECONDS",
+        "RATE_LIMIT_API_EXPENSIVE_MAX_ATTEMPTS",
+        "RATE_LIMIT_API_EXPENSIVE_WINDOW_SECONDS",
+        "RATE_LIMIT_API_ADMIN_MAX_ATTEMPTS",
+        "RATE_LIMIT_API_ADMIN_WINDOW_SECONDS",
+    ],
+)
+@pytest.mark.parametrize("bad_value", ["0", "-1"])
+def test_rate_limit_api_tier_fields_reject_zero_and_negative(field, bad_value):
+    with env_vars(ENVIRONMENT="development", **{field: bad_value}):
+        get_settings.cache_clear()
+        with pytest.raises(ValueError):
+            Settings()
+
+
+@pytest.mark.parametrize("bad_value", ["0", "-1", "999"])
+def test_rate_limit_max_stored_keys_rejects_below_floor(bad_value):
+    with env_vars(ENVIRONMENT="development", RATE_LIMIT_MAX_STORED_KEYS=bad_value):
+        get_settings.cache_clear()
+        with pytest.raises(ValueError):
+            Settings()
+
+
+def test_rate_limit_max_stored_keys_accepts_the_floor():
+    settings = _settings(ENVIRONMENT="development", RATE_LIMIT_MAX_STORED_KEYS="1000")
+    assert settings.rate_limit_max_stored_keys == 1000
+
+
+def test_rate_limit_api_enabled_is_independent_from_rate_limit_enabled():
+    """Disabling one must leave the other's setting value intact --
+    the two flags are read from entirely separate env vars."""
+    both_off = _settings(ENVIRONMENT="development", RATE_LIMIT_ENABLED="false", RATE_LIMIT_API_ENABLED="false")
+    assert both_off.rate_limit_enabled is False
+    assert both_off.rate_limit_api_enabled is False
+
+    only_pr6 = _settings(ENVIRONMENT="development", RATE_LIMIT_ENABLED="true", RATE_LIMIT_API_ENABLED="false")
+    assert only_pr6.rate_limit_enabled is True
+    assert only_pr6.rate_limit_api_enabled is False
+
+    only_pr14 = _settings(ENVIRONMENT="development", RATE_LIMIT_ENABLED="false", RATE_LIMIT_API_ENABLED="true")
+    assert only_pr14.rate_limit_enabled is False
+    assert only_pr14.rate_limit_api_enabled is True
+
+
+def test_production_requires_rate_limit_api_enabled_independently_of_rate_limit_enabled():
+    """RATE_LIMIT_ENABLED=true alone must not satisfy the new
+    RATE_LIMIT_API_ENABLED requirement, and vice versa -- both production
+    checks below run to completion."""
+    env = {**VALID_PRODUCTION_ENV, "RATE_LIMIT_ENABLED": "true", "RATE_LIMIT_API_ENABLED": "false"}
+    with env_vars(**env):
+        get_settings.cache_clear()
+        with pytest.raises(ValueError) as exc_info:
+            Settings()
+    assert "RATE_LIMIT_API_ENABLED" in str(exc_info.value)
+    assert "RATE_LIMIT_ENABLED must be true" not in str(exc_info.value)
+
+    env = {**VALID_PRODUCTION_ENV, "RATE_LIMIT_ENABLED": "false", "RATE_LIMIT_API_ENABLED": "true"}
+    with env_vars(**env):
+        get_settings.cache_clear()
+        with pytest.raises(ValueError) as exc_info:
+            Settings()
+    assert "RATE_LIMIT_ENABLED must be true" in str(exc_info.value)
 
 
 def test_csv_list_fields_trim_whitespace_and_ignore_blank_entries():

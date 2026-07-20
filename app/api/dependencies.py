@@ -119,17 +119,25 @@ def require_admin(
 from app.core.exceptions import RateLimited
 from app.middleware.request_context import get_request_context
 from app.services.auth_service import normalize_email
-from app.services.rate_limiter_service import RateLimitResult, get_rate_limiter
+from app.services.rate_limiter_service import RateLimitResult, get_api_rate_limiter, get_rate_limiter
 
 
 def _client_rate_limit_key() -> str:
     return get_request_context()["ip_address"] or "unknown"
 
 
-def _raise_if_denied(result: RateLimitResult, audit: AuditService, event_name: str, reason_code: str) -> None:
+def _raise_if_denied(
+    result: RateLimitResult,
+    audit: AuditService,
+    event_name: str,
+    reason_code: str,
+    *,
+    category: str = "authentication",
+    actor_user_id: str | None = None,
+) -> None:
     if result.allowed:
         return
-    audit.record(event_name, category="authentication", outcome="denied", reason_code=reason_code)
+    audit.record(event_name, category=category, outcome="denied", actor_user_id=actor_user_id, reason_code=reason_code)
     raise RateLimited(
         retry_after_seconds=result.reset_seconds,
         limit=result.limit,
@@ -181,3 +189,105 @@ def check_login_account_rate_limit(email: str, audit: AuditService) -> None:
         window_seconds=settings.rate_limit_login_account_window_seconds,
     )
     _raise_if_denied(result, audit, "auth.login.rate_limited", "RATE_LIMIT_ACCOUNT")
+
+
+# --- General /api/v1/* rate limiting (Phase 1.5 PR 14) ---------------------
+# Uses a separate limiter instance (get_api_rate_limiter) and a separate
+# enable flag (rate_limit_api_enabled) from PR6's auth-only tiers above --
+# see docs/security/THREAT_MODEL.md T11 for why the two must never share
+# instance state.
+#
+# The four rate_limit_api_* category functions below are deliberately
+# left flat and near-identical rather than factored through a shared
+# helper -- mirrors rate_limit_auth_ip/rate_limit_login_ip/
+# check_login_account_rate_limit's own unfactored shape immediately
+# above, this file's established precedent for one-dependency-per-tier.
+
+
+def rate_limit_api_perimeter(audit: AuditService = Depends(get_audit_service)) -> None:
+    """Coarse, identity-free perimeter tier for every protected_api_router
+    request. Attached once, at the router level (app/main.py), and runs
+    before require_api_key/get_current_user by construction, so its own
+    cost stays a single dict lookup -- it exists specifically to protect
+    the cost of everything downstream from being reached at all during a
+    flood. IP-keyed via the same, unchanged _client_rate_limit_key() PR6
+    already uses."""
+    settings = get_settings()
+    if not settings.rate_limit_api_enabled:
+        return
+    result = get_api_rate_limiter().check(
+        f"api_perimeter:{_client_rate_limit_key()}",
+        max_attempts=settings.rate_limit_api_perimeter_max_attempts,
+        window_seconds=settings.rate_limit_api_perimeter_window_seconds,
+    )
+    _raise_if_denied(result, audit, "api.rate_limited", "RATE_LIMIT_PERIMETER", category="authorization")
+
+
+def rate_limit_api_read(
+    user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+) -> None:
+    """Authenticated read tier -- keyed on the caller's own user.id, never
+    a path-supplied student_id (a teacher holding grants across many
+    students is bounded once, holistically, by their own account)."""
+    settings = get_settings()
+    if not settings.rate_limit_api_enabled:
+        return
+    result = get_api_rate_limiter().check(
+        f"api_read:{user.id}",
+        max_attempts=settings.rate_limit_api_read_max_attempts,
+        window_seconds=settings.rate_limit_api_read_window_seconds,
+    )
+    _raise_if_denied(result, audit, "api.rate_limited", "RATE_LIMIT_READ", category="authorization", actor_user_id=user.id)
+
+
+def rate_limit_api_write(
+    user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+) -> None:
+    """Authenticated write tier -- see rate_limit_api_read for the
+    user.id-keying rationale."""
+    settings = get_settings()
+    if not settings.rate_limit_api_enabled:
+        return
+    result = get_api_rate_limiter().check(
+        f"api_write:{user.id}",
+        max_attempts=settings.rate_limit_api_write_max_attempts,
+        window_seconds=settings.rate_limit_api_write_window_seconds,
+    )
+    _raise_if_denied(result, audit, "api.rate_limited", "RATE_LIMIT_WRITE", category="authorization", actor_user_id=user.id)
+
+
+def rate_limit_api_expensive(
+    user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+) -> None:
+    """Authenticated expensive/diagnostic-AI tier -- the heaviest-compute
+    routes today, and the explicit future LLM-cost surface (ADR 0002)."""
+    settings = get_settings()
+    if not settings.rate_limit_api_enabled:
+        return
+    result = get_api_rate_limiter().check(
+        f"api_expensive:{user.id}",
+        max_attempts=settings.rate_limit_api_expensive_max_attempts,
+        window_seconds=settings.rate_limit_api_expensive_window_seconds,
+    )
+    _raise_if_denied(result, audit, "api.rate_limited", "RATE_LIMIT_EXPENSIVE", category="authorization", actor_user_id=user.id)
+
+
+def rate_limit_api_admin(
+    user: User = Depends(get_current_user),
+    audit: AuditService = Depends(get_audit_service),
+) -> None:
+    """Administrative tier -- a safety net against a compromised or
+    malfunctioning admin credential/script, not the primary adversarial
+    control (admin accounts are already the most trusted in this system)."""
+    settings = get_settings()
+    if not settings.rate_limit_api_enabled:
+        return
+    result = get_api_rate_limiter().check(
+        f"api_admin:{user.id}",
+        max_attempts=settings.rate_limit_api_admin_max_attempts,
+        window_seconds=settings.rate_limit_api_admin_window_seconds,
+    )
+    _raise_if_denied(result, audit, "api.rate_limited", "RATE_LIMIT_ADMIN", category="authorization", actor_user_id=user.id)

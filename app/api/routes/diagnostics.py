@@ -1,5 +1,5 @@
 from fastapi import APIRouter,Depends,File,Form,UploadFile,Query,status
-from app.api.dependencies import get_authorization_service,get_current_user,get_service
+from app.api.dependencies import get_authorization_service,get_current_user,get_service,rate_limit_api_expensive,rate_limit_api_read,rate_limit_api_write
 from app.schemas.diagnostic import *
 from app.core.config import get_settings
 from app.core.exceptions import UnsupportedFile,FileTooLarge
@@ -8,29 +8,29 @@ from app.services.authorization_service import AuthorizationService
 from app.services.ocr_service import NoOpOCRProvider
 router=APIRouter(prefix='/api/v1',tags=['diagnostics'])
 
-@router.post('/diagnostics',response_model=DiagnosticResponse,status_code=201)
+@router.post('/diagnostics',response_model=DiagnosticResponse,status_code=201,dependencies=[Depends(rate_limit_api_expensive)])
 async def create(r:DiagnosticRequest,s=Depends(get_service),user:User=Depends(get_current_user),authz:AuthorizationService=Depends(get_authorization_service)):
     authz.ensure_student_write_access(user,r.student_id)
     return await s.create(r)
 
-@router.get('/diagnostics/{diagnostic_id}',response_model=DiagnosticResponse)
+@router.get('/diagnostics/{diagnostic_id}',response_model=DiagnosticResponse,dependencies=[Depends(rate_limit_api_read)])
 def get_one(diagnostic_id:str,s=Depends(get_service),user:User=Depends(get_current_user),authz:AuthorizationService=Depends(get_authorization_service)):
     result=s.get(diagnostic_id)
     authz.ensure_student_read_access(user,result.student_id)
     return result
 
-@router.get('/students/{student_id}/diagnostics',response_model=DiagnosticListResponse)
+@router.get('/students/{student_id}/diagnostics',response_model=DiagnosticListResponse,dependencies=[Depends(rate_limit_api_read)])
 def history(student_id:str,limit:int=Query(20,ge=1,le=100),offset:int=Query(0,ge=0),s=Depends(get_service),user:User=Depends(get_current_user),authz:AuthorizationService=Depends(get_authorization_service)):
     authz.ensure_student_read_access(user,student_id)
     return s.list_student(student_id,limit,offset)
 
-@router.post('/diagnostics/{diagnostic_id}/feedback',response_model=FeedbackResponse,status_code=201)
+@router.post('/diagnostics/{diagnostic_id}/feedback',response_model=FeedbackResponse,status_code=201,dependencies=[Depends(rate_limit_api_write)])
 def feedback(diagnostic_id:str,r:FeedbackRequest,s=Depends(get_service),user:User=Depends(get_current_user),authz:AuthorizationService=Depends(get_authorization_service)):
     existing=s.get(diagnostic_id)
     authz.ensure_student_write_access(user,existing.student_id)
     return s.feedback(diagnostic_id,r,reviewer_id=user.id,reviewer_type=user.role)
 
-@router.post('/diagnostics/from-image',status_code=501)
+@router.post('/diagnostics/from-image',status_code=501,dependencies=[Depends(rate_limit_api_expensive)])
 async def image(student_id:str=Form(...),student_answer:str=Form(...),problem_image:UploadFile=File(...),user:User=Depends(get_current_user),authz:AuthorizationService=Depends(get_authorization_service)):
     authz.ensure_student_write_access(user,student_id)
     settings=get_settings(); allowed={'image/jpeg','image/png','application/pdf'}

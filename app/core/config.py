@@ -93,6 +93,33 @@ class Settings(BaseSettings):
     rate_limit_auth_ip_max_attempts: int = Field(30, ge=1)
     rate_limit_auth_ip_window_seconds: int = Field(300, ge=1)
 
+    # --- General API rate limiting (Phase 1.5 PR 14) -----------------------
+    # Independent from rate_limit_enabled (PR6) -- an operator can disable
+    # PR14's general /api/v1/* protection without disabling PR6's
+    # authentication protection, and vice versa. Off by default in dev/test,
+    # same reasoning as rate_limit_enabled above. Production startup
+    # validation below requires this to be true.
+    rate_limit_api_enabled: bool = False
+    # Coarse, identity-free perimeter tier -- IP-keyed, evaluated before
+    # require_api_key/get_current_user for every protected_api_router route.
+    # Sized generously (~10x PR6's auth_ip sustained rate) to absorb many
+    # concurrent authenticated users sharing one classroom IP.
+    rate_limit_api_perimeter_max_attempts: int = Field(300, ge=1)
+    rate_limit_api_perimeter_window_seconds: int = Field(300, ge=1)
+    # Authenticated tiers -- keyed on the caller's own user.id, never a
+    # path-supplied student_id.
+    rate_limit_api_read_max_attempts: int = Field(120, ge=1)
+    rate_limit_api_read_window_seconds: int = Field(60, ge=1)
+    rate_limit_api_write_max_attempts: int = Field(30, ge=1)
+    rate_limit_api_write_window_seconds: int = Field(60, ge=1)
+    rate_limit_api_expensive_max_attempts: int = Field(20, ge=1)
+    rate_limit_api_expensive_window_seconds: int = Field(60, ge=1)
+    rate_limit_api_admin_max_attempts: int = Field(60, ge=1)
+    rate_limit_api_admin_window_seconds: int = Field(60, ge=1)
+    # Bounded-memory ceiling for PR14's own, separate MemoryRateLimiter
+    # instance only -- PR6's instance remains unbounded and untouched.
+    rate_limit_max_stored_keys: int = Field(50_000, ge=1000)
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("cors_allowed_origins", "trusted_hosts", mode="before")
@@ -143,6 +170,12 @@ class Settings(BaseSettings):
             problems.append(
                 "RATE_LIMIT_ENABLED must be true in production to protect authentication "
                 "endpoints from credential-stuffing/brute-force abuse."
+            )
+
+        if not self.rate_limit_api_enabled:
+            problems.append(
+                "RATE_LIMIT_API_ENABLED must be true in production to protect general "
+                "/api/v1/* endpoints from abuse."
             )
 
         if problems:
