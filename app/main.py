@@ -16,6 +16,7 @@ from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.auth import router as auth_router
 from app.middleware.request_context import RequestContextMiddleware
 from app.middleware.security import configure_security_middleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -35,6 +36,10 @@ app = FastAPI(
 )
 configure_security_middleware(app, settings)
 app.add_middleware(RequestContextMiddleware)
+# Registered last so it is the outermost user-added middleware, wrapping
+# every response CORS/TrustedHost/RequestContextMiddleware produce or
+# pass through -- see app/middleware/security_headers.py.
+app.add_middleware(SecurityHeadersMiddleware, settings=settings)
 app.add_exception_handler(AppError, app_error_handler)
 
 @app.exception_handler(EvaluationNotFoundError)

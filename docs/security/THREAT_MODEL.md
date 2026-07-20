@@ -13,15 +13,16 @@ does **not** exist in the codebase today. Password-hashing (Argon2id),
 JWT/refresh-token authentication (PR 3), route-level authorization/tenant
 isolation (PR 4), security audit logging (PR 5), rate limiting on
 authentication endpoints (PR 6), CORS/TrustedHost enforcement (PR 7), CI
-dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), and CI
-static application security testing (PR 12), by contrast, **are implemented**
-— see §3 and §8 (T1, T2, T3, T4-T7, T12, T15, T16) for what that does and does
-not cover. Items marked "current" or described as "already in place" (§10)
-are live in `main` right now: the shared API key, PR1's configuration
-validation, PR 3's authentication endpoints, PR 4's centralized
-`AuthorizationService`, PR 5's `AuditService`, PR 6's `RateLimiter`, PR 7's
-CORS/TrustedHost middleware, PR 10's `pip-audit` CI job, PR 11's Gitleaks CI
-job, and PR 12's Bandit CI job.**
+dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), CI
+static application security testing (PR 12), and security response headers
+(PR 13), by contrast, **are implemented** — see §3 and §8 (T1, T2, T3, T4-T7,
+T12, T15, T16) for what that does and does not cover. Items marked "current"
+or described as "already in place" (§10) are live in `main` right now: the
+shared API key, PR1's configuration validation, PR 3's authentication
+endpoints, PR 4's centralized `AuthorizationService`, PR 5's `AuditService`,
+PR 6's `RateLimiter`, PR 7's CORS/TrustedHost middleware, PR 10's `pip-audit`
+CI job, PR 11's Gitleaks CI job, PR 12's Bandit CI job, and PR 13's
+`SecurityHeadersMiddleware`.**
 
 ## 2. Security philosophy
 
@@ -139,6 +140,16 @@ subsystem (`app/api/routes/auth.py`, Phase 1.5 PR 3) that is not behind that gat
   the application is secure, does not perform cross-file/business-logic
   analysis, and produces both false positives and false negatives by
   design. See §8 (T15) for what this covers and does not.
+- **Security response headers** (`app/middleware/security_headers.py`,
+  **already implemented**, Phase 1.5 PR 13) — `SecurityHeadersMiddleware`
+  (`BaseHTTPMiddleware`), registered as the outermost user-added
+  middleware in `app/main.py`, stamps `Content-Security-Policy`,
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
+  `Permissions-Policy`, and a route-scoped `Cache-Control` onto every
+  response that returns normally through the middleware chain, plus
+  `Strict-Transport-Security` when `ENVIRONMENT=production`. No new
+  configuration setting was added; HSTS reuses PR1's existing
+  `Settings.environment`. See §8 (T12) for what this covers and does not.
 
 `/health` and `/ready` are intentionally public. Image upload
 (`POST /api/v1/diagnostics/from-image`) fails closed (`NoOpOCRProvider`, HTTP 501)
@@ -247,7 +258,7 @@ see §8 (T12) for the enforced behavior.
 | T9 | Malicious or malformed student input | Medium | **Current, partial** | Free-text fields are stored/returned as-is; the API does not sanitize for HTML/script content (JSON responses only — any future frontend rendering this data must treat it as untrusted). No general request-body size cap exists beyond the image-upload path. |
 | T10 | Sensitive student-data exposure | High | **Largely mitigated (PR4 closed the T6/T7 exposure paths)** | No direct PII collected today (`student_id` is opaque). Cross-student exposure via T6/T7 is closed; residual exposure would require a leaked `student_id`↔real-identity mapping (e.g., a school roster) re-identifying a real student from academically sensitive data — a data-handling concern outside this API's authorization boundary. |
 | T11 | API abuse / denial of service | Medium | **Partially mitigated (PR6, auth endpoints only)** | `/api/v1/auth/*` now has per-IP backpressure (see T2). Every other `/api/v1/*` route (diagnostics/knowledge/learning/tutor/dashboard/evaluation) remains unprotected — no general rate limiting, no general body-size cap, no concurrency/timeout controls. Any non-auth endpoint can still be flooded with no backpressure. |
-| T12 | Insecure CORS / trusted-host configuration | Medium | **Mitigated (implemented in PR7)** | `CORSMiddleware`/`TrustedHostMiddleware` (Starlette built-ins) are now wired in `app/main.py` via `app/middleware/security.py`, consuming PR1's already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` directly -- no new settings, no duplicate validation. A mismatched `Host` header gets Starlette's built-in `400 Invalid host header` (left unmodified -- see design notes in `app/middleware/security.py`); a disallowed CORS origin never receives `Access-Control-Allow-Origin` (browsers block the read; the server itself still processes and returns the response for a non-preflight request -- CORS is a browser-side control, not a server-side reject). `allow_methods`/`allow_headers` are explicit lists (`GET`/`POST`/`PATCH` and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID`), not `"*"` -- this API's surface is small and fully known, so there was no compatibility reason to fall back to a wildcard. Empty-list semantics differ deliberately by design: empty `TRUSTED_HOSTS` means allow **all** hosts (matches Starlette's own `None`-defaults-to-`["*"]` behavior), while empty `CORS_ALLOWED_ORIGINS` means allow **no** browser origins (an empty allowlist, not a wildcard) -- both are dev/test-only states, since production requires both non-empty (PR1, unchanged by this PR). `www_redirect` is disabled (an API should never 301 a non-GET request). |
+| T12 | Insecure CORS / trusted-host configuration | Medium | **Mitigated (implemented in PR7, extended in PR13)** | `CORSMiddleware`/`TrustedHostMiddleware` (Starlette built-ins) are now wired in `app/main.py` via `app/middleware/security.py`, consuming PR1's already-validated `CORS_ALLOWED_ORIGINS`/`TRUSTED_HOSTS` directly -- no new settings, no duplicate validation. A mismatched `Host` header gets Starlette's built-in `400 Invalid host header` (left unmodified -- see design notes in `app/middleware/security.py`); a disallowed CORS origin never receives `Access-Control-Allow-Origin` (browsers block the read; the server itself still processes and returns the response for a non-preflight request -- CORS is a browser-side control, not a server-side reject). `allow_methods`/`allow_headers` are explicit lists (`GET`/`POST`/`PATCH` and `Authorization`/`Content-Type`/`X-API-Key`/`X-Request-ID`), not `"*"` -- this API's surface is small and fully known, so there was no compatibility reason to fall back to a wildcard. Empty-list semantics differ deliberately by design: empty `TRUSTED_HOSTS` means allow **all** hosts (matches Starlette's own `None`-defaults-to-`["*"]` behavior), while empty `CORS_ALLOWED_ORIGINS` means allow **no** browser origins (an empty allowlist, not a wildcard) -- both are dev/test-only states, since production requires both non-empty (PR1, unchanged by this PR). `www_redirect` is disabled (an API should never 301 a non-GET request). **PR13** adds `SecurityHeadersMiddleware` (`app/middleware/security_headers.py`), stamping `Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, a route-scoped `Cache-Control: no-store` on `/api/v1/*`, and `Strict-Transport-Security` (production only, `max-age=31536000`, no `includeSubDomains`/`preload`) onto every response that returns normally through the middleware chain. CSP exempts exactly `request.app.docs_url`/`request.app.redoc_url` (derived dynamically, never hardcoded `/docs`/`/redoc` literals); `request.app.openapi_url` is deliberately not exempted, since CSP governs the document that initiates a fetch, not the fetched resource's own response. **Operational prerequisite**: this application cannot independently verify that TLS is genuinely enforced by the deployment edge -- `uvicorn`'s `forwarded_allow_ips` defaults to `127.0.0.1` and nothing in this repo's `Dockerfile`/`docker-compose.yml` narrows or widens that default, so `request.url.scheme`/`X-Forwarded-Proto` cannot currently be trusted as a signal of the original client connection's protocol; HSTS is therefore gated solely on the operator-controlled `ENVIRONMENT=production` setting, which must only be set once genuine, end-to-end HTTPS is actually in place. Per RFC 6797 §7.2, compliant browsers ignore `Strict-Transport-Security` received over a non-HTTPS connection, bounding the consequence of a premature `ENVIRONMENT=production` setting. **Middleware coverage boundary**: headers apply to every response returned normally through `call_next` -- successful responses, FastAPI validation errors, `HTTPException` responses, this application's handled `AppError` responses (including 401/403/429), and `TrustedHostMiddleware`/CORS rejection responses -- but **not** to a bare `500` produced by a genuinely unhandled exception once it propagates past every user-added middleware to Starlette's `ServerErrorMiddleware`; closing that gap would require a catch-all exception handler, which PR13 does not add. |
 | T13 | Database compromise | Medium | **Low (injection), moderate (transport/at-rest)** | All queries go through SQLAlchemy Core/ORM parameter binding — no raw string-interpolated SQL found. Transport now requires TLS in production (PR1, implemented). At-rest encryption/credential storage depends on the hosting choice (deferred to deployment PR, not yet built). |
 | T14 | Logging of secrets or personal data | Medium | **Low, fragile** | `RequestContextMiddleware` logs method/path/status/duration/request_id only — no bodies, headers, or field values. Risk is forward-looking: once JWTs/passwords/PII exist, no redaction filter exists yet to catch a careless future log statement. |
 | T15 | Dependency and supply-chain risk | Medium | **Partially mitigated (implemented in PR10)** | `.github/workflows/ci.yml`'s `security` job runs `pip-audit` against the fully resolved, installed dependency environment (not `requirements.txt` directly) on every push/pull request, failing the build if any known published vulnerability is found -- no ignore list, no suppression, no `continue-on-error`. This detects known, publicly disclosed vulnerabilities in the exact dependency versions actually installed; it does **not** guarantee complete software supply-chain security. It does not cover: malicious or typosquatted packages, package provenance/integrity, the Docker base image or OS-level packages, or vulnerabilities that haven't been publicly disclosed yet. `requirements.txt` still uses range pins, not hash pins. CI secret scanning (PR 11) and CI static application security testing (PR 12, `bandit`) are now implemented (see §3), but neither substitutes for dependency/supply-chain coverage; there is still no container-image scanning in CI. |
@@ -508,15 +519,22 @@ exists in the codebase yet:**
 - **T11 remains partially open**: only `/api/v1/auth/*` is rate-limited
   (PR6); every other `/api/v1/*` route still has no rate limiting, no
   general body-size cap, and no concurrency/timeout controls.
-- **T12 residuals (PR7):** enforcement is now live, but scope is
-  deliberately narrow -- CSP headers, HSTS, `X-Frame-Options`,
-  `X-Content-Type-Options`, and CSRF protection are all explicitly out of
-  scope for this PR (see PR7 design notes) and remain unaddressed by any
-  Phase 1.5 PR to date. Host/origin allowlists are static, in-process
-  config (no dynamic/multi-tenant origin support). TrustedHost's built-in
-  `400` and CORS preflight's built-in `400` are Starlette's default
-  plain-text responses, deliberately left unwrapped in this app's
-  `AppError` JSON envelope (see `app/middleware/security.py`).
+- **T12 residuals (PR7/PR13):** Host/origin allowlists are static,
+  in-process config (no dynamic/multi-tenant origin support). TrustedHost's
+  built-in `400` and CORS preflight's built-in `400` are Starlette's
+  default plain-text responses, deliberately left unwrapped in this app's
+  `AppError` JSON envelope (see `app/middleware/security.py`). CSP, HSTS,
+  `X-Frame-Options`, and `X-Content-Type-Options` are now implemented
+  (PR13, see the T12 row in §8 for the exact mechanism, values, and
+  coverage boundary); **CSRF protection remains explicitly out of scope
+  and unaddressed** -- a distinct control from response headers, not
+  attempted here (this API is Bearer-token-only with
+  `allow_credentials=False` and no cookies, so CSRF's classic attack shape
+  mostly does not apply, but that is a separate analysis this PR does not
+  perform). The remaining PR13 residuals -- the documentation-page CSP
+  gap, the browser↔API TLS verification limit, and the unhandled-500
+  coverage boundary -- are the same three items described in the T12 row
+  in §8; they are not repeated here.
 - Access tokens have no revocation store: a stolen access token remains valid
   until its short expiry elapses (mitigated by the 15-minute default lifetime,
   not eliminated).
@@ -553,45 +571,52 @@ exists in the codebase yet:**
 
 - The shared API key is a low-trust, internal/service-to-service credential
   only — never a substitute for per-user authentication once real users exist.
-- Production deployments enforce TLS in transit (browser↔API and API↔database),
-  per PR1's validated configuration (already implemented).
+- API↔database TLS in transit is enforced by PR1's validated
+  `DATABASE_URL` configuration (already implemented). Browser↔API TLS is
+  **not independently verifiable by this application** -- see the T12 row
+  in §8 for the `uvicorn`/`forwarded_allow_ips` finding this rests on.
+  Genuine end-to-end HTTPS in front of this application remains an
+  operational prerequisite the deployer is responsible for, not something
+  PR1 or PR13 enforces or confirms in code.
 - The eventual hosting platform is trusted for physical security and
   platform-level isolation; this model does not threat-model the hosting
   provider itself.
 - Development/test environments are never exposed to the public internet and
   are intentionally exempt from production-grade secret/CORS/TLS enforcement
   (`Environment.development`/`test` in `app/core/config.py`).
-- **Authentication (PR 3), authorization (PR 4), audit logging (PR 5),
-  authentication-endpoint rate limiting (PR 6), CORS/TrustedHost
-  enforcement (PR 7), CI dependency-vulnerability scanning (PR 10), CI
-  secret scanning (PR 11), and CI static application security testing
-  (PR 12) are all now implemented.** This system still should not be
-  exposed to real, non-test student data in a publicly reachable,
+- **The complete set of security controls implemented so far is listed at
+  the start of §13; it is not repeated here.** This system still should
+  not be exposed to real, non-test student data in a publicly reachable,
   horizontally-scaled deployment until the Redis rate-limiting backend
   lands (T2 residual) and general `/api/v1/*` rate limiting exists (T11
   residual) — see §11 residual risks and §13. `pip-audit` (PR 10) detects
   known, published dependency vulnerabilities only; `gitleaks` (PR 11)
   detects patterns resembling committed secrets only; `bandit` (PR 12)
-  detects patterns resembling known code-level weaknesses in `app/` only.
-  None of the three is a substitute for the others, for container-image
-  scanning, for a runtime secrets manager, for credential rotation, or for
-  manual/architecture review.
+  detects patterns resembling known code-level weaknesses in `app/` only;
+  `SecurityHeadersMiddleware` (PR 13) adds browser-facing defense-in-depth
+  headers but does not itself enforce or verify that TLS is genuinely in
+  place. None of these controls is a substitute for the others, for
+  container-image scanning, for a runtime secrets manager, for credential
+  rotation, or for manual/architecture review.
 
 ## 13. Deferred security work, mapped to future Phase 1.5 PRs
 
 Identity schema (PR 2B), authentication (PR 3), authorization/tenant
 isolation (PR 4), audit logging (PR 5), authentication-endpoint rate
 limiting (PR 6), CORS/TrustedHost enforcement (PR 7), CI
-dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), and
-CI static application security testing (PR 12) are implemented; everything
-below is still approved architecture that will be addressed in its own
-future PR per the approved Phase 1.5 roadmap.
+dependency-vulnerability scanning (PR 10), CI secret scanning (PR 11), CI
+static application security testing (PR 12), and security response headers
+(PR 13) are implemented; everything below is still approved architecture
+that will be addressed in its own future PR per the approved Phase 1.5
+roadmap.
 
 | Future PR | Closes / reduces |
 |---|---|
 | Redis-backed `RateLimiter` (horizontal scaling) | Closes T2's per-process residual |
 | General `/api/v1/*` rate limiting and abuse protection | Remaining T11 |
-| Additional browser-security headers (CSP, HSTS, X-Frame-Options, X-Content-Type-Options), CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
+| Reverse-proxy/ingress deployment | Would resolve the browser↔API TLS trust-boundary gap noted in §12 and enable a properly-scoped, proxy-aware HSTS check |
+| Vendoring Swagger UI/ReDoc assets locally | Would close the documentation-page CSP residual (T12) |
+| CSRF protection | Not yet approved/scoped by any Phase 1.5 PR |
 | Container-image scanning | Remaining T15 (dependency scanning, secret scanning, and SAST are now implemented, PR 10, PR 11, and PR 12) |
 | Runtime secrets-manager integration, credential rotation, pre-commit secret protection | Remaining T3 residuals |
 | Observability (structured logging + redaction filter) | Reduces residual T14 |
