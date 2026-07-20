@@ -4,6 +4,7 @@ from app.db.base import Base
 from app.db.session import engine
 from app.core.config import get_settings
 from app.core.exceptions import AppError, app_error_handler, EvaluationNotFound, ExperimentNotFound
+from app.api.dependencies import rate_limit_api_perimeter
 from app.security.api_key import require_api_key
 from app.services.evaluation_service import EvaluationNotFoundError, ExperimentNotFoundError
 from app.core.logging import configure_logging
@@ -53,7 +54,13 @@ async def experiment_not_found_handler(request, exc):
 # routers must be registered on this aggregator, not directly on `app`, to
 # inherit protection automatically. tests/test_api_key_protection.py enforces
 # this invariant against the live route table, independent of how routers are wired.
-protected_api_router = APIRouter(dependencies=[Depends(require_api_key)])
+# rate_limit_api_perimeter (Phase 1.5 PR 14) runs first -- before
+# require_api_key -- so its own cost (one dict lookup) is paid before any
+# credential check, protecting the cost of everything downstream during a
+# flood. Each domain route additionally carries exactly one authenticated
+# category dependency (read/write/expensive/administrative), enforced by
+# tests/test_rate_limiting_api.py's future-route safety-net test.
+protected_api_router = APIRouter(dependencies=[Depends(rate_limit_api_perimeter), Depends(require_api_key)])
 protected_api_router.include_router(router)
 protected_api_router.include_router(knowledge_router)
 protected_api_router.include_router(learning_router)

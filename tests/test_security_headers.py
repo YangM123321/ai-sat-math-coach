@@ -248,6 +248,7 @@ def test_hsts_present_with_exact_value_in_production():
         cors_allowed_origins=["https://allowed.example.com"],
         trusted_hosts=["allowed.example.com"],
         rate_limit_enabled=True,
+        rate_limit_api_enabled=True,
     )
     client = TestClient(app, base_url="http://allowed.example.com")
     r = client.get("/probe")
